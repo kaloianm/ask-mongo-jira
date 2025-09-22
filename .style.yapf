@@ -1,0 +1,6 @@
+[style]
+# Base style
+based_on_style = pep8
+
+# Control line length
+column_limit = 100

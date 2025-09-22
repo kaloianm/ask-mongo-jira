@@ -1,0 +1,11 @@
+# The default virtual environment folder
+python3-venv
+
+# Don't add the actual credentials accidentally to code
+.env
+
+# Unsorted
+__pycache__/
+*.pyc
+.DS_Store
+output.json
