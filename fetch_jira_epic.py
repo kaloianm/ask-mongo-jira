@@ -10,7 +10,7 @@ import os
 import json
 import logging
 import argparse
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 # Third-party imports
 from jira import JIRA
@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Global logger
+# Setup the global logger
 logger = logging.getLogger(__name__)
 
 
