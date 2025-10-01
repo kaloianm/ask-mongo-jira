@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 """
 fetch_jira_epic - A simple tool for fetching all issues in a Jira epic from the "Core Server"
-project, including development information.
+project, including development information, and storing them in MongoDB.
 
 Usage:
+    python fetch_jira_epic.py EPIC-123 --mongodb-url mongodb://localhost:27017
+
+Environment Variables:
+    JIRA_URL - Jira server URL
+    JIRA_API_TOKEN - Jira API token
+    GITHUB_TOKEN - GitHub API token (optional)
+    OPENAI_API_KEY - OpenAI API key (optional)
+    MONGODB_URL - MongoDB connection URL (can be overridden with --mongodb-url)
+
+The script will store all fetched issues as documents in the "ask-mongo-jira" database
+in the "jira_issues" collection.
 """
 
 import os
 import json
 import logging
 import argparse
+import asyncio
 from typing import Dict, Any
 
 # Third-party imports
@@ -17,6 +29,7 @@ from jira import JIRA
 from github import Github
 import openai
 from dotenv import load_dotenv
+from motor.motor_asyncio import AsyncIOMotorClient
 
 # Load environment variables from .env file
 load_dotenv()
@@ -39,13 +52,15 @@ class JiraIssueIterator:
                  jira_url: str = None,
                  jira_token: str = None,
                  github_token: str = None,
-                 openai_api_key: str = None):
+                 openai_api_key: str = None,
+                 mongodb_url: str = None):
         """Initialize with configuration parameters"""
         # Store configuration
         self.jira_url = jira_url
         self.jira_token = jira_token
         self.github_token = github_token
         self.openai_api_key = openai_api_key
+        self.mongodb_url = mongodb_url
 
         # Log configuration (mask sensitive tokens)
         logger.info("Initializing JiraIssueIterator with configuration:")
@@ -53,6 +68,7 @@ class JiraIssueIterator:
         logger.info("  jira_token: %s", "***" if jira_token else None)
         logger.info("  github_token: %s", "***" if github_token else None)
         logger.info("  openai_api_key: %s", "***" if openai_api_key else None)
+        logger.info("  mongodb_url: %s", "***" if mongodb_url else None)
 
         # Initialize clients
         self.jira_client = None
@@ -65,6 +81,13 @@ class JiraIssueIterator:
 
         if self.openai_api_key:
             openai.api_key = self.openai_api_key
+
+        # Initialize MongoDB client
+        self.mongodb_client = None
+        if self.mongodb_url:
+            self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
+            self.db = self.mongodb_client["ask-mongo-jira"]
+            self.collection = self.db["jira_issues"]
 
     def _get_development_info_via_api(self, issue) -> Dict[str, Any]:
         """Get development information using Jira's REST API directly"""
@@ -255,7 +278,7 @@ class JiraIssueIterator:
 
             # Search for issues with expanded fields
             issues = self.jira_client.search_issues(jql,
-                                                    maxResults=5,
+                                                    maxResults=False,
                                                     expand='changelog,comment,devinfo')
 
             logger.info("Found %d issues in epic %s", len(issues), epic_key)
@@ -310,40 +333,128 @@ class JiraIssueIterator:
             # Return empty iterator on error
             return iter([])
 
+    async def store_issues_in_mongodb(self, issues: list) -> None:
+        """Store issues in MongoDB database using batch upsert operations"""
+        if not self.mongodb_client:
+            raise ValueError("MongoDB not configured. Set MONGODB_URL")
 
-def main():
+        try:
+            logger.info("Batch upserting %d issues in MongoDB", len(issues))
+
+            if not issues:
+                logger.info("No issues to store in MongoDB")
+                return
+
+            # Add timestamp for when records were last updated
+            import datetime
+            current_time = datetime.datetime.utcnow()
+
+            # Prepare bulk operations for batch processing
+            from pymongo import ReplaceOne
+            bulk_operations = []
+
+            for issue in issues:
+                # Add last_updated timestamp
+                issue["last_updated"] = current_time
+
+                # Create filter for unique identification (epic + key)
+                filter_query = {"epic": issue["epic"], "key": issue["key"]}
+
+                # Create ReplaceOne operation with upsert=True
+                operation = ReplaceOne(filter_query, issue, upsert=True)
+                bulk_operations.append(operation)
+
+            # Execute all operations in a single batch
+            result = await self.collection.bulk_write(bulk_operations, ordered=False)
+
+            # Log the results
+            inserted_count = result.upserted_count
+            updated_count = result.modified_count
+
+            logger.info("Batch operation completed: %d inserted, %d updated, %d total processed",
+                        inserted_count, updated_count, len(issues))
+
+        except Exception as e:
+            logger.error("Error storing issues in MongoDB: %s", e)
+            raise
+
+    async def setup_database_indexes(self) -> None:
+        """Set up database indexes for efficient querying"""
+        if not self.mongodb_client:
+            return
+
+        try:
+            # Create a compound index on epic and key for uniqueness and efficient queries
+            await self.collection.create_index([("epic", 1), ("key", 1)],
+                                               unique=True,
+                                               name="epic_key_unique")
+
+            logger.info("Database indexes created successfully")
+
+        except Exception as e:
+            # Index creation might fail if indexes already exist, which is fine
+            logger.debug("Index creation result: %s", e)
+
+    async def close_mongodb_connection(self) -> None:
+        """Close MongoDB connection"""
+        if self.mongodb_client:
+            self.mongodb_client.close()
+            logger.info("MongoDB connection closed")
+
+
+async def main():
     """Main function"""
-    parser = argparse.ArgumentParser(description="Query Jira tickets")
+    parser = argparse.ArgumentParser(description="Query Jira tickets and store in MongoDB")
     parser.add_argument("epic", help="Epic ticket ID to get all Core Server issues in that epic")
+    parser.add_argument("--log-level",
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
+                        default='INFO',
+                        help="Set the logging level")
 
     args = parser.parse_args()
 
-    # Setup logging with default INFO level
-    setup_logging("INFO")
+    # Setup logging with specified level
+    setup_logging(args.log_level)
 
     # Extract configuration from environment variables
     jira_url = os.getenv('JIRA_URL')
     jira_token = os.getenv('JIRA_API_TOKEN')
     github_token = os.getenv('GITHUB_TOKEN')
     openai_api_key = os.getenv('OPENAI_API_KEY')
+    mongodb_url = os.getenv('MONGODB_URL')
+
+    if not mongodb_url:
+        logger.error("MongoDB URL is required. Set the MONGODB_URL environment variable")
+        return
 
     # Initialize the tool with configuration
     tool = JiraIssueIterator(jira_url=jira_url,
                              jira_token=jira_token,
                              github_token=github_token,
-                             openai_api_key=openai_api_key)
+                             openai_api_key=openai_api_key,
+                             mongodb_url=mongodb_url)
 
-    # Collect data
-    logger.info("Fetching issues for epic: %s", args.epic)
+    try:
+        # Set up database indexes
+        await tool.setup_database_indexes()
 
-    # Collect all issues from the iterator
-    issues = []
-    for issue in tool.get_epic_issues(args.epic):
-        issues.append(issue)
+        # Collect data
+        logger.info("Fetching issues for epic: %s", args.epic)
 
-    # Output results
-    print(json.dumps(issues, indent=2))
+        # Collect all issues from the iterator
+        issues = []
+        for issue in tool.get_epic_issues(args.epic):
+            issues.append(issue)
+
+        # Store in MongoDB instead of printing
+        await tool.store_issues_in_mongodb(issues)
+
+        logger.info("Successfully processed %d issues for epic %s", len(issues), args.epic)
+
+    finally:
+        # Clean up MongoDB connection
+        await tool.close_mongodb_connection()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

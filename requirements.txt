@@ -2,6 +2,7 @@
 jira==3.5.2
 PyGithub==1.59.1
 openai==0.28.1
+motor==3.6.0
 
 # Additional utilities
 python-dotenv==1.0.0
