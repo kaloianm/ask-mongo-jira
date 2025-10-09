@@ -1,13 +1,13 @@
 # AskMongoJIRA
 
-A simple Python tool for querying Jira tickets, GitHub pull requests, and analyzing them with AI.
+A set of Python scripts to fetch the code changes for a given Jira Epic and analyze them with AI.
 
 ## Setup
 
 1. Create a virtual environment:
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+python3 -m venv python3-venv
+source python3-venv/bin/activate
 ```
 
 2. Install dependencies:
@@ -23,31 +23,16 @@ cp .env.example .env
 
 ## Usage
 
-### Query a Jira ticket:
+### Fetch Jira Epic and store in MongoDB:
 ```bash
-python main.py --jira-ticket PROJ-123
+python fetch_jira_epic.py EPIC-123
 ```
 
-### Query a GitHub PR:
+### Sync code changes with fetched Jira Epics stored in MongoDB:
 ```bash
-python main.py --github-pr 45 --repo owner/repo-name
-```
-
-### Ask AI about the data:
-```bash
-python main.py --jira-ticket PROJ-123 --question "What is this ticket about?"
-python main.py --github-pr 45 --repo owner/repo --question "What changes were made?"
-```
-
-### Output as JSON:
-```bash
-python main.py --jira-ticket PROJ-123 --output json
+python fetch_code_changes.py
 ```
 
 ## Environment Variables
 
-- `JIRA_URL`: Your Jira instance URL
-- `JIRA_USERNAME`: Your Jira username/email
-- `JIRA_API_TOKEN`: Your Jira API token
-- `GITHUB_TOKEN`: Your GitHub personal access token
-- `OPENAI_API_KEY`: Your OpenAI API key
+See [.env](.env).

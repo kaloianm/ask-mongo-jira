@@ -9,8 +9,6 @@ Usage:
 Environment Variables:
     JIRA_URL - Jira server URL
     JIRA_API_TOKEN - Jira API token
-    GITHUB_TOKEN - GitHub API token (optional)
-    OPENAI_API_KEY - OpenAI API key (optional)
     MONGODB_URL - MongoDB connection URL (can be overridden with --mongodb-url)
 
 The script will store all fetched issues as documents in the "ask-mongo-jira" database
@@ -26,8 +24,6 @@ from typing import Dict, Any
 
 # Third-party imports
 from jira import JIRA
-from github import Github
-import openai
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -45,42 +41,26 @@ def setup_logging(level: str = "INFO") -> None:
                         datefmt='%Y-%m-%d %H:%M:%S')
 
 
-class JiraIssueIterator:
-    """Main class for querying Jira, GitHub, and OpenAI"""
+class JiraIssueFetcher:
+    """Main class for querying Jira"""
 
-    def __init__(self,
-                 jira_url: str = None,
-                 jira_token: str = None,
-                 github_token: str = None,
-                 openai_api_key: str = None,
-                 mongodb_url: str = None):
+    def __init__(self, jira_url: str = None, jira_token: str = None, mongodb_url: str = None):
         """Initialize with configuration parameters"""
         # Store configuration
         self.jira_url = jira_url
         self.jira_token = jira_token
-        self.github_token = github_token
-        self.openai_api_key = openai_api_key
         self.mongodb_url = mongodb_url
 
         # Log configuration (mask sensitive tokens)
-        logger.info("Initializing JiraIssueIterator with configuration:")
+        logger.info("Initializing JiraIssueFetcher with configuration:")
         logger.info("  jira_url: %s", jira_url)
         logger.info("  jira_token: %s", "***" if jira_token else None)
-        logger.info("  github_token: %s", "***" if github_token else None)
-        logger.info("  openai_api_key: %s", "***" if openai_api_key else None)
         logger.info("  mongodb_url: %s", "***" if mongodb_url else None)
 
         # Initialize clients
         self.jira_client = None
         if self.jira_url and self.jira_token:
             self.jira_client = JIRA(server=self.jira_url, token_auth=self.jira_token)
-
-        self.github_client = None
-        if self.github_token:
-            self.github_client = Github(self.github_token)
-
-        if self.openai_api_key:
-            openai.api_key = self.openai_api_key
 
         # Initialize MongoDB client
         self.mongodb_client = None
@@ -93,96 +73,91 @@ class JiraIssueIterator:
         """Get development information using Jira's REST API directly"""
         dev_info = {'commits': [], 'branches': [], 'pull_requests': [], 'repositories': []}
 
-        try:
-            # Get the internal issue ID (numeric) instead of the issue key
-            issue_id = issue.id if hasattr(issue, 'id') else None
-            issue_key = issue.key if hasattr(issue, 'key') else 'unknown'
+        # Get the internal issue ID (numeric) instead of the issue key
+        issue_id = issue.id if hasattr(issue, 'id') else None
+        issue_key = issue.key if hasattr(issue, 'key') else 'unknown'
 
-            if not issue_id:
-                logger.warning("Could not get internal issue ID for %s", issue_key)
-                return dev_info
+        if not issue_id:
+            logger.warning("Could not get internal issue ID for %s", issue_key)
+            return dev_info
 
-            # Use the development information REST endpoint
-            dev_url = f"{self.jira_url}/rest/dev-status/1.0/issue/detail"
-            params = {
-                'issueId': issue_id,  # Use numeric ID instead of key
-                'applicationType': 'github',  # or 'bitbucket', 'gitlab'
-                'dataType': 'repository'
-            }
+        # Use the development information REST endpoint
+        dev_url = f"{self.jira_url}/rest/dev-status/1.0/issue/detail"
+        params = {
+            'issueId': issue_id,  # Use numeric ID instead of key
+            'applicationType': 'github',  # or 'bitbucket', 'gitlab'
+            'dataType': 'repository'
+        }
 
-            logger.info("Attempting to fetch development info via API for %s (ID: %s)", issue_key,
-                        issue_id)
+        logger.info("Attempting to fetch development info via API for %s (ID: %s)", issue_key,
+                    issue_id)
 
-            # Use the Jira client's internal session which already has authentication
-            jira_session = getattr(self.jira_client, '_session', None)
-            if not jira_session:
-                logger.warning("Cannot access Jira session for development API call")
-                return dev_info
+        # Use the Jira client's internal session which already has authentication
+        jira_session = getattr(self.jira_client, '_session', None)
+        if not jira_session:
+            logger.warning("Cannot access Jira session for development API call")
+            return dev_info
 
-            # Make the actual API request
-            response = jira_session.get(dev_url, params=params)
+        # Make the actual API request
+        response = jira_session.get(dev_url, params=params)
 
-            if response.status_code == 200:
-                data = response.json()
-                logger.debug("Development API response: %s", json.dumps(data, indent=2))
+        if response.status_code == 200:
+            data = response.json()
+            logger.debug("Development API response: %s", json.dumps(data, indent=2))
 
-                # Parse the response to extract commits, branches, and PRs
-                if 'detail' in data:
-                    for detail in data['detail']:
-                        if 'repositories' in detail:
-                            for repo in detail['repositories']:
-                                repo_name = repo.get('name', 'unknown')
-                                dev_info['repositories'].append(repo_name)
+            # Parse the response to extract commits, branches, and PRs
+            if 'detail' in data:
+                for detail in data['detail']:
+                    if 'repositories' in detail:
+                        for repo in detail['repositories']:
+                            repo_name = repo.get('name', 'unknown')
+                            dev_info['repositories'].append(repo_name)
 
-                                # Extract commits
-                                if 'commits' in repo:
-                                    for commit in repo['commits']:
-                                        commit_info = {
-                                            'id': commit.get('id', commit.get('displayId', None)),
-                                            'message': commit.get('message', None),
-                                            'author': commit.get('author', {}).get('name', None),
-                                            'timestamp': commit.get('authorTimestamp', None),
-                                            'url': commit.get('url', None),
-                                            'repository': repo_name,
-                                            'raw': commit,
-                                        }
-                                        dev_info['commits'].append(commit_info)
+                            # Extract commits
+                            if 'commits' in repo:
+                                for commit in repo['commits']:
+                                    commit_info = {
+                                        'id': commit.get('id', commit.get('displayId', None)),
+                                        'message': commit.get('message', None),
+                                        'author': commit.get('author', {}).get('name', None),
+                                        'timestamp': commit.get('authorTimestamp', None),
+                                        'url': commit.get('url', None),
+                                        'repository': repo_name,
+                                        'raw': commit,
+                                    }
+                                    dev_info['commits'].append(commit_info)
 
-                                # Extract branches
-                                if 'branches' in repo:
-                                    for branch in repo['branches']:
-                                        branch_info = {
-                                            'name': branch.get('name', None),
-                                            'url': branch.get('url', None),
-                                            'repository': repo_name
-                                        }
-                                        dev_info['branches'].append(branch_info)
+                            # Extract branches
+                            if 'branches' in repo:
+                                for branch in repo['branches']:
+                                    branch_info = {
+                                        'name': branch.get('name', None),
+                                        'url': branch.get('url', None),
+                                        'repository': repo_name
+                                    }
+                                    dev_info['branches'].append(branch_info)
 
-                                # Extract pull requests
-                                if 'pullRequests' in repo:
-                                    for pr in repo['pullRequests']:
-                                        pr_info = {
-                                            'id': pr.get('id', None),
-                                            'title': pr.get('title', None),
-                                            'status': pr.get('status', None),
-                                            'url': pr.get('url', None),
-                                            'author': pr.get('author', {}).get('name', None),
-                                            'repository': repo_name
-                                        }
-                                        dev_info['pull_requests'].append(pr_info)
+                            # Extract pull requests
+                            if 'pullRequests' in repo:
+                                for pr in repo['pullRequests']:
+                                    pr_info = {
+                                        'id': pr.get('id', None),
+                                        'title': pr.get('title', None),
+                                        'status': pr.get('status', None),
+                                        'url': pr.get('url', None),
+                                        'author': pr.get('author', {}).get('name', None),
+                                        'repository': repo_name
+                                    }
+                                    dev_info['pull_requests'].append(pr_info)
 
-                logger.info("Found %d commits, %d branches, %d PRs for issue %s",
-                            len(dev_info['commits']), len(dev_info['branches']),
-                            len(dev_info['pull_requests']), issue_key)
-            else:
-                logger.warning("Development API returned status %d for issue %s",
-                               response.status_code, issue_key)
-                if response.status_code == 404:
-                    logger.info(
-                        "Development info API not available or issue has no development data")
-
-        except Exception as e:
-            logger.warning("Could not fetch development info via API for %s: %s", issue_key, e)
+            logger.info("Found %d commits, %d branches, %d PRs for issue %s",
+                        len(dev_info['commits']), len(dev_info['branches']),
+                        len(dev_info['pull_requests']), issue_key)
+        else:
+            logger.warning("Development API returned status %d for issue %s", response.status_code,
+                           issue_key)
+            if response.status_code == 404:
+                logger.info("Development info API not available or issue has no development data")
 
         return dev_info
 
@@ -190,78 +165,73 @@ class JiraIssueIterator:
         """Extract development information (commits, branches, PRs) from a Jira issue"""
         dev_info = {'commits': [], 'branches': [], 'pull_requests': [], 'repositories': []}
 
-        try:
-            # Try to get development information using the REST API
-            # This requires the issue to be expanded with 'devinfo'
-            if hasattr(issue, 'fields') and hasattr(issue.fields, 'development'):
-                development = issue.fields.development
+        # Try to get development information using the REST API
+        # This requires the issue to be expanded with 'devinfo'
+        if hasattr(issue, 'fields') and hasattr(issue.fields, 'development'):
+            development = issue.fields.development
 
-                # Extract commits
-                if hasattr(development, 'commits'):
-                    for commit in development.commits:
-                        commit_info = {
-                            'id':
-                            getattr(commit, 'id', None),
-                            'message':
-                            getattr(commit, 'message', None),
-                            'author':
-                            getattr(commit, 'author', {}).get('name', None) if hasattr(
-                                commit, 'author') else None,
-                            'timestamp':
-                            str(getattr(commit, 'timestamp', None)) if getattr(
-                                commit, 'timestamp', None) else None,
-                            'url':
-                            getattr(commit, 'url', None),
-                            'repository':
-                            getattr(commit, 'repository', {}).get('name', None) if hasattr(
-                                commit, 'repository') else None,
-                            'raw':
-                            commit,
-                        }
-                        dev_info['commits'].append(commit_info)
+            # Extract commits
+            if hasattr(development, 'commits'):
+                for commit in development.commits:
+                    commit_info = {
+                        'id':
+                        getattr(commit, 'id', None),
+                        'message':
+                        getattr(commit, 'message', None),
+                        'author':
+                        getattr(commit, 'author', {}).get('name', None) if hasattr(
+                            commit, 'author') else None,
+                        'timestamp':
+                        str(getattr(commit, 'timestamp', None)) if getattr(
+                            commit, 'timestamp', None) else None,
+                        'url':
+                        getattr(commit, 'url', None),
+                        'repository':
+                        getattr(commit, 'repository', {}).get('name', None) if hasattr(
+                            commit, 'repository') else None,
+                        'raw':
+                        commit,
+                    }
+                    dev_info['commits'].append(commit_info)
 
-                # Extract branches
-                if hasattr(development, 'branches'):
-                    for branch in development.branches:
-                        branch_info = {
-                            'name':
-                            getattr(branch, 'name', None),
-                            'url':
-                            getattr(branch, 'url', None),
-                            'repository':
-                            getattr(branch, 'repository', {}).get('name', None) if hasattr(
-                                branch, 'repository') else None
-                        }
-                        dev_info['branches'].append(branch_info)
+            # Extract branches
+            if hasattr(development, 'branches'):
+                for branch in development.branches:
+                    branch_info = {
+                        'name':
+                        getattr(branch, 'name', None),
+                        'url':
+                        getattr(branch, 'url', None),
+                        'repository':
+                        getattr(branch, 'repository', {}).get('name', None) if hasattr(
+                            branch, 'repository') else None
+                    }
+                    dev_info['branches'].append(branch_info)
 
-                # Extract pull requests
-                if hasattr(development, 'pullRequests'):
-                    for pr in development.pullRequests:
-                        pr_info = {
-                            'id':
-                            getattr(pr, 'id', None),
-                            'title':
-                            getattr(pr, 'title', None),
-                            'status':
-                            getattr(pr, 'status', None),
-                            'url':
-                            getattr(pr, 'url', None),
-                            'author':
-                            getattr(pr, 'author', {}).get('name', None)
-                            if hasattr(pr, 'author') else None,
-                            'repository':
-                            getattr(pr, 'repository', {}).get('name', None) if hasattr(
-                                pr, 'repository') else None,
-                        }
-                        dev_info['pull_requests'].append(pr_info)
+            # Extract pull requests
+            if hasattr(development, 'pullRequests'):
+                for pr in development.pullRequests:
+                    pr_info = {
+                        'id':
+                        getattr(pr, 'id', None),
+                        'title':
+                        getattr(pr, 'title', None),
+                        'status':
+                        getattr(pr, 'status', None),
+                        'url':
+                        getattr(pr, 'url', None),
+                        'author':
+                        getattr(pr, 'author', {}).get('name', None)
+                        if hasattr(pr, 'author') else None,
+                        'repository':
+                        getattr(pr, 'repository', {}).get('name', None) if hasattr(
+                            pr, 'repository') else None,
+                    }
+                    dev_info['pull_requests'].append(pr_info)
 
-            # Alternative approach: Use Jira's REST API directly
-            if not dev_info['commits'] and not dev_info['branches'] and not dev_info[
-                    'pull_requests']:
-                dev_info = self._get_development_info_via_api(issue)
-
-        except Exception as e:
-            logger.warning("Could not extract development info for %s: %s", issue.key, e)
+        # Alternative approach: Use Jira's REST API directly
+        if not dev_info['commits'] and not dev_info['branches'] and not dev_info['pull_requests']:
+            dev_info = self._get_development_info_via_api(issue)
 
         return dev_info if any(dev_info.values()) else None
 
@@ -270,130 +240,106 @@ class JiraIssueIterator:
         if not self.jira_client:
             raise ValueError("Jira not configured. Set JIRA_URL and JIRA_API_TOKEN")
 
-        try:
-            # JQL to find all issues in Core Server project that belong to the epic
-            jql = f'project = "Core Server" AND "Epic Link" = {epic_key}'
+        # JQL to find all issues in Core Server project that belong to the epic
+        jql = f'project = "Core Server" AND "Epic Link" = {epic_key}'
 
-            logger.info("Searching for issues in epic %s using JQL: %s", epic_key, jql)
+        logger.info("Searching for issues in epic %s using JQL: %s", epic_key, jql)
 
-            # Search for issues with expanded fields
-            issues = self.jira_client.search_issues(jql,
-                                                    maxResults=False,
-                                                    expand='changelog,comment,devinfo')
+        # Search for issues with expanded fields
+        issues = self.jira_client.search_issues(jql,
+                                                maxResults=False,
+                                                expand='changelog,comment,devinfo')
 
-            logger.info("Found %d issues in epic %s", len(issues), epic_key)
+        logger.info("Found %d issues in epic %s", len(issues), epic_key)
 
-            # Yield each issue with full details (similar to get_jira_ticket)
-            for issue in issues:
-                try:
-                    # Get detailed issue information (reusing logic from get_jira_ticket)
-                    issue_data = {
-                        'epic':
-                        epic_key,
-                        'key':
-                        issue.key,
-                        'summary':
-                        issue.fields.summary,
-                        'description':
-                        issue.fields.description,
-                        'status':
-                        issue.fields.status.name,
-                        'assignee':
-                        issue.fields.assignee.displayName if issue.fields.assignee else None,
-                        'reporter':
-                        issue.fields.reporter.displayName if issue.fields.reporter else None,
-                        'created':
-                        str(issue.fields.created),
-                        'updated':
-                        str(issue.fields.updated),
-                        'issue_type':
-                        issue.fields.issuetype.name,
-                        'priority':
-                        issue.fields.priority.name if issue.fields.priority else None,
-                        'components':
-                        [comp.name
-                         for comp in issue.fields.components] if issue.fields.components else [],
-                    }
+        # Yield each issue with full details (similar to get_jira_ticket)
+        for issue in issues:
+            # Get detailed issue information (reusing logic from get_jira_ticket)
+            issue_data = {
+                'epic':
+                epic_key,
+                'key':
+                issue.key,
+                'summary':
+                issue.fields.summary,
+                'description':
+                issue.fields.description,
+                'status':
+                issue.fields.status.name,
+                'assignee':
+                issue.fields.assignee.displayName if issue.fields.assignee else None,
+                'reporter':
+                issue.fields.reporter.displayName if issue.fields.reporter else None,
+                'created':
+                str(issue.fields.created),
+                'updated':
+                str(issue.fields.updated),
+                'issue_type':
+                issue.fields.issuetype.name,
+                'priority':
+                issue.fields.priority.name if issue.fields.priority else None,
+                'components':
+                [comp.name for comp in issue.fields.components] if issue.fields.components else [],
+            }
 
-                    # Extract development information if available
-                    dev_info = self._extract_development_info(issue)
-                    if dev_info:
-                        issue_data['development'] = dev_info
+            # Extract development information if available
+            dev_info = self._extract_development_info(issue)
+            if dev_info:
+                issue_data['development'] = dev_info
 
-                    yield issue_data
-
-                except Exception as e:
-                    logger.error("Error processing issue %s: %s",
-                                 issue.key if hasattr(issue, 'key') else 'unknown', e)
-                    # Continue with next issue instead of stopping entirely
-                    continue
-
-        except Exception as e:
-            logger.error("Error fetching epic issues for %s: %s", epic_key, e)
-            # Return empty iterator on error
-            return iter([])
+            yield issue_data
 
     async def store_issues_in_mongodb(self, issues: list) -> None:
         """Store issues in MongoDB database using batch upsert operations"""
         if not self.mongodb_client:
             raise ValueError("MongoDB not configured. Set MONGODB_URL")
 
-        try:
-            logger.info("Batch upserting %d issues in MongoDB", len(issues))
+        logger.info("Batch upserting %d issues in MongoDB", len(issues))
 
-            if not issues:
-                logger.info("No issues to store in MongoDB")
-                return
+        if not issues:
+            logger.info("No issues to store in MongoDB")
+            return
 
-            # Add timestamp for when records were last updated
-            import datetime
-            current_time = datetime.datetime.utcnow()
+        # Add timestamp for when records were last updated
+        import datetime
+        current_time = datetime.datetime.utcnow()
 
-            # Prepare bulk operations for batch processing
-            from pymongo import ReplaceOne
-            bulk_operations = []
+        # Prepare bulk operations for batch processing
+        from pymongo import ReplaceOne
+        bulk_operations = []
 
-            for issue in issues:
-                # Add last_updated timestamp
-                issue["last_updated"] = current_time
+        for issue in issues:
+            # Add last_updated timestamp
+            issue["last_updated"] = current_time
 
-                # Create filter for unique identification (epic + key)
-                filter_query = {"epic": issue["epic"], "key": issue["key"]}
+            # Create filter for unique identification (epic + key)
+            filter_query = {"epic": issue["epic"], "key": issue["key"]}
 
-                # Create ReplaceOne operation with upsert=True
-                operation = ReplaceOne(filter_query, issue, upsert=True)
-                bulk_operations.append(operation)
+            # Create ReplaceOne operation with upsert=True
+            operation = ReplaceOne(filter_query, issue, upsert=True)
+            bulk_operations.append(operation)
 
-            # Execute all operations in a single batch
-            result = await self.collection.bulk_write(bulk_operations, ordered=False)
+        # Execute all operations in a single batch
+        result = await self.collection.bulk_write(bulk_operations, ordered=False)
 
-            # Log the results
-            inserted_count = result.upserted_count
-            updated_count = result.modified_count
+        # Log the results
+        inserted_count = result.upserted_count
+        updated_count = result.modified_count
 
-            logger.info("Batch operation completed: %d inserted, %d updated, %d total processed",
-                        inserted_count, updated_count, len(issues))
-
-        except Exception as e:
-            logger.error("Error storing issues in MongoDB: %s", e)
-            raise
+        logger.info("Batch operation completed: %d inserted, %d updated, %d total processed",
+                    inserted_count, updated_count, len(issues))
 
     async def setup_database_indexes(self) -> None:
         """Set up database indexes for efficient querying"""
         if not self.mongodb_client:
             return
 
-        try:
-            # Create a compound index on epic and key for uniqueness and efficient queries
-            await self.collection.create_index([("epic", 1), ("key", 1)],
-                                               unique=True,
-                                               name="epic_key_unique")
+        # Create a compound index on epic and key for uniqueness and efficient queries
+        await self.collection.create_index([("epic", 1), ("key", 1)],
+                                           unique=True,
+                                           name="epic_key_unique")
 
-            logger.info("Database indexes created successfully")
-
-        except Exception as e:
-            # Index creation might fail if indexes already exist, which is fine
-            logger.debug("Index creation result: %s", e)
+        logger.info("Database indexes created successfully")
 
     async def close_mongodb_connection(self) -> None:
         """Close MongoDB connection"""
@@ -419,8 +365,6 @@ async def main():
     # Extract configuration from environment variables
     jira_url = os.getenv('JIRA_URL')
     jira_token = os.getenv('JIRA_API_TOKEN')
-    github_token = os.getenv('GITHUB_TOKEN')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
     mongodb_url = os.getenv('MONGODB_URL')
 
     if not mongodb_url:
@@ -428,11 +372,7 @@ async def main():
         return
 
     # Initialize the tool with configuration
-    tool = JiraIssueIterator(jira_url=jira_url,
-                             jira_token=jira_token,
-                             github_token=github_token,
-                             openai_api_key=openai_api_key,
-                             mongodb_url=mongodb_url)
+    tool = JiraIssueFetcher(jira_url=jira_url, jira_token=jira_token, mongodb_url=mongodb_url)
 
     try:
         # Set up database indexes
