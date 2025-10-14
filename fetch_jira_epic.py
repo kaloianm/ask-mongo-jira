@@ -17,15 +17,18 @@ in the "jira_issues" collection.
 
 import os
 import json
+import datetime
 import logging
 import argparse
 import asyncio
+
 from typing import Dict, Any
 
 # Third-party imports
 from jira import JIRA
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReplaceOne
 
 # Load environment variables from .env file
 load_dotenv()
@@ -35,18 +38,24 @@ logger = logging.getLogger(__name__)
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """Setup logging configuration"""
+    """
+    Setup logging configuration
+    """
     logging.basicConfig(level=getattr(logging, level.upper()),
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S')
 
 
 class JiraIssueFetcher:
-    """Main class for querying Jira"""
+    """
+    Main class for querying Jira
+    """
 
     def __init__(self, jira_url: str, jira_token: str, mongodb_url):
-        """Initialize with configuration parameters"""
-        # Store configuration
+        """
+        Initialize with configuration parameters
+        """
+
         self.jira_url = jira_url
         self.jira_token = jira_token
         self.mongodb_url = mongodb_url
@@ -58,19 +67,17 @@ class JiraIssueFetcher:
         logger.info("  mongodb_url: %s", "***" if mongodb_url else None)
 
         # Initialize clients
-        self.jira_client = None
-        if self.jira_url and self.jira_token:
-            self.jira_client = JIRA(server=self.jira_url, token_auth=self.jira_token)
+        self.jira_client = JIRA(server=self.jira_url, token_auth=self.jira_token)
+        self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
 
-        # Initialize MongoDB client
-        self.mongodb_client = None
-        if self.mongodb_url:
-            self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
-            self.db = self.mongodb_client["ask-mongo-jira"]
-            self.collection = self.db["jira_issues"]
+        self.db = self.mongodb_client["ask-mongo-jira"]
+        self.collection = self.db["jira_issues"]
 
     def _get_development_info_via_api(self, issue) -> Dict[str, Any]:
-        """Get development information using Jira's REST API directly"""
+        """
+        Get development information using Jira's REST API directly
+        """
+
         dev_info = {'commits': [], 'branches': [], 'pull_requests': []}
 
         # Get the internal issue ID (numeric) instead of the issue key
@@ -156,7 +163,9 @@ class JiraIssueFetcher:
         return dev_info
 
     def _extract_development_info(self, issue) -> Dict[str, Any]:
-        """Extract development information (commits, branches, PRs) from a Jira issue"""
+        """
+        Extract development information (commits, branches, PRs) from a Jira issue
+        """
 
         dev_info = {'commits': [], 'branches': [], 'pull_requests': []}
 
@@ -220,7 +229,9 @@ class JiraIssueFetcher:
         return dev_info if any(dev_info.values()) else None
 
     def get_epic_issues(self, epic_key: str):
-        """Get all issues from Core Server project that belong to a specific epic - returns an iterator"""
+        """
+        Get all issues from Core Server project that belong to a specific epic - returns an iterator
+        """
 
         # JQL to find all issues in Core Server project that belong to the epic
         jql = f'project = "Core Server" AND "Epic Link" = {epic_key}'
@@ -269,9 +280,9 @@ class JiraIssueFetcher:
             yield issue_data
 
     async def store_issues_in_mongodb(self, issues: list) -> None:
-        """Store issues in MongoDB database using batch upsert operations"""
-        if not self.mongodb_client:
-            raise ValueError("MongoDB not configured. Set MONGODB_URL")
+        """
+        Store issues in MongoDB database using batch upsert operations
+        """
 
         logger.info("Batch upserting %d issues in MongoDB", len(issues))
 
@@ -280,11 +291,9 @@ class JiraIssueFetcher:
             return
 
         # Add timestamp for when records were last updated
-        import datetime
         current_time = datetime.datetime.utcnow()
 
         # Prepare bulk operations for batch processing
-        from pymongo import ReplaceOne
         bulk_operations = []
 
         for issue in issues:
@@ -309,7 +318,10 @@ class JiraIssueFetcher:
                     inserted_count, updated_count, len(issues))
 
     async def setup_database_indexes(self) -> None:
-        """Set up database indexes for efficient querying"""
+        """
+        Set up database indexes for efficient querying
+        """
+
         if not self.mongodb_client:
             return
 
@@ -321,14 +333,20 @@ class JiraIssueFetcher:
         logger.info("Database indexes created successfully")
 
     async def close_mongodb_connection(self) -> None:
-        """Close MongoDB connection"""
+        """
+        Close MongoDB connection
+        """
+
         if self.mongodb_client:
             self.mongodb_client.close()
             logger.info("MongoDB connection closed")
 
 
 async def main():
-    """Main function"""
+    """
+    Main function
+    """
+
     parser = argparse.ArgumentParser(description="Query Jira tickets and store in MongoDB")
     parser.add_argument("epic", help="Epic ticket ID to get all Core Server issues in that epic")
     parser.add_argument("--log-level",
