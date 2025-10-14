@@ -15,7 +15,7 @@ Environment Variables:
 
 The script will:
 1. Query the "ask-mongo-jira" database using aggregation to join jira_issues -> commits -> file_changes
-2. For each issue-commit-file combination, generate analysis questions and send to OpenAI
+2. For each JIRA issue, generate comprehensive analysis questions covering all commits and file changes
 3. Store the analysis results in the "code_analysis" collection
 
 The aggregation approach reduces database round-trips and provides better performance by joining:
@@ -27,15 +27,13 @@ All in a single MongoDB aggregation pipeline.
 The code_analysis collection will contain documents with:
 - epic_key: The epic ticket ID
 - issue_key: The JIRA issue key
-- commit_id: The git commit SHA
-- repository: The repository name
-- filename: The changed file path
-- analysis_type: Type of analysis performed (e.g., "change_summary", "potential_issues", "impact_assessment")
+- analysis_type: Type of analysis performed (e.g., "issue_summary", "issue_potential_issues", "issue_impact_assessment")
 - question: The question sent to OpenAI
 - response: OpenAI's analysis response
 - model_used: The OpenAI model used for analysis
 - timestamp: When the analysis was performed
 - last_updated: When this record was last updated
+- issue_stats: Statistics about the issue (commit count, repositories, file changes count)
 """
 
 import os
@@ -237,6 +235,108 @@ class CodeAnalyzer:
 
         return questions
 
+    def _generate_issue_analysis_questions(self, issue_data: Dict[str, Any]) -> List[Dict[str, str]]:
+        """
+        Generate analysis questions for an entire JIRA issue (all commits and file changes)
+        
+        Args:
+            issue_data: Issue document with all commits and file changes
+            
+        Returns:
+            List of dictionaries with 'type' and 'question' keys
+        """
+        issue_key = issue_data.get('issue_key', '')
+        issue_summary = issue_data.get('issue_summary', '')
+        issue_description = issue_data.get('issue_description', '')
+        commits = issue_data.get('commits', [])
+
+        # Collect all file changes across all commits
+        all_file_changes = []
+        commit_summaries = []
+        repositories = set()
+
+        for commit in commits:
+            commit_id = commit.get('commit_id', '')
+            commit_message = commit.get('message', '')
+            commit_author = commit.get('author', {})
+            repository = commit.get('repository', '')
+            file_changes = commit.get('file_changes', [])
+
+            if repository:
+                repositories.add(repository)
+
+            if commit_message:
+                author_name = commit_author.get('name', 'Unknown') if isinstance(commit_author, dict) else 'Unknown'
+                commit_summaries.append(f"- {commit_id[:8]}: {commit_message.strip()} (by {author_name})")
+
+            all_file_changes.extend(file_changes)
+
+        # Group file changes by filename to show consolidated changes
+        files_summary = {}
+        for file_change in all_file_changes:
+            filename = file_change.get('filename', '')
+            if filename:
+                if filename not in files_summary:
+                    files_summary[filename] = {
+                        'status': file_change.get('status', ''),
+                        'total_additions': 0,
+                        'total_deletions': 0,
+                        'patches': []
+                    }
+                files_summary[filename]['total_additions'] += file_change.get('additions', 0)
+                files_summary[filename]['total_deletions'] += file_change.get('deletions', 0)
+                if file_change.get('patch'):
+                    files_summary[filename]['patches'].append(file_change.get('patch', ''))
+
+        # Create file changes summary text
+        files_text = []
+        for filename, summary in files_summary.items():
+            files_text.append(f"- {filename} ({summary['status']}, +{summary['total_additions']}/-{summary['total_deletions']} lines)")
+
+        # Template variables for string formatting
+        template_vars = {
+            'issue_key': issue_key,
+            'issue_summary': issue_summary,
+            'issue_description': issue_description or 'No description available',
+            'repositories': ', '.join(repositories) if repositories else 'Unknown',
+            'commit_count': len(commits),
+            'file_count': len(files_summary),
+            'commits_summary': '\n'.join(commit_summaries) if commit_summaries else 'No commit details available',
+            'files_summary': '\n'.join(files_text) if files_text else 'No file changes available'
+        }
+
+        questions = []
+        questions_config = self.config.get('analysis_questions', {})
+
+        # Issue summary analysis
+        change_summary_config = questions_config.get('change_summary', {})
+        questions.append({
+            'type': change_summary_config.get('type', 'issue_summary'),
+            'question': change_summary_config.get('template', '').format(**template_vars)
+        })
+
+        # Only generate detailed analysis if there are substantial changes
+        total_changes = sum(summary['total_additions'] + summary['total_deletions'] 
+                          for summary in files_summary.values())
+        min_patch_length = questions_config.get('min_patch_length', 50)
+        
+        if total_changes > min_patch_length:
+            # Potential issues analysis
+            potential_issues_config = questions_config.get('potential_issues', {})
+            questions.append({
+                'type': potential_issues_config.get('type', 'issue_potential_issues'),
+                'question': potential_issues_config.get('template', '').format(**template_vars)
+            })
+
+        # Impact assessment analysis
+        impact_assessment_config = questions_config.get('impact_assessment', {})
+        questions.append({
+            'type': impact_assessment_config.get('type', 'issue_impact_assessment'),
+            'question': impact_assessment_config.get('template', '').format(**template_vars)
+        })
+
+        return questions
+
     async def get_mcp_context(self, filename: str, repository: str) -> str:
         """
         Get additional context from MCP server for enhanced code analysis
@@ -330,6 +430,102 @@ class CodeAnalyzer:
         action = "inserted" if result.upserted_id else "updated"
         logger.debug("Analysis %s in code_analysis collection for %s:%s", action,
                      analysis_data["issue_key"], analysis_data["filename"])
+
+    async def get_epic_data_by_issue(self, epic_key: str) -> List[Dict[str, Any]]:
+        """
+        Get all epic data grouped by JIRA issue (all commits and file changes per issue)
+        
+        Args:
+            epic_key: The epic ticket ID (e.g., "SERVER-12345")
+            
+        Returns:
+            List of documents with issue data and all related commits/file changes
+        """
+        logger.info("Fetching aggregated data by issue for epic %s", epic_key)
+
+        # MongoDB aggregation pipeline to group all changes by JIRA issue
+        pipeline = [
+            # Stage 1: Match issues in the epic
+            {
+                "$match": {
+                    "epic": epic_key
+                }
+            },
+
+            # Stage 2: Unwind development.commits array to process each commit separately
+            {
+                "$unwind": {
+                    "path": "$development.commits",
+                    "preserveNullAndEmptyArrays": True
+                }
+            },
+
+            # Stage 3: Lookup commits using development.commits.id as foreign key
+            {
+                "$lookup": {
+                    "from": "commits",
+                    "localField": "development.commits.id",
+                    "foreignField": "commit_id",
+                    "as": "commit_details"
+                }
+            },
+
+            # Stage 4: Unwind commit details
+            {
+                "$unwind": {
+                    "path": "$commit_details",
+                    "preserveNullAndEmptyArrays": True
+                }
+            },
+
+            # Stage 5: Lookup file changes for each commit
+            {
+                "$lookup": {
+                    "from": "file_changes",
+                    "localField": "commit_details.commit_id",
+                    "foreignField": "commit_id",
+                    "as": "file_changes"
+                }
+            },
+
+            # Stage 6: Group back by issue to collect all commits and file changes
+            {
+                "$group": {
+                    "_id": "$key",
+                    "issue_key": {"$first": "$key"},
+                    "issue_summary": {"$first": "$summary"},
+                    "issue_description": {"$first": "$description"},
+                    "commits": {
+                        "$push": {
+                            "$cond": {
+                                "if": {"$ne": ["$commit_details", None]},
+                                "then": {
+                                    "commit_id": "$commit_details.commit_id",
+                                    "message": "$commit_details.message",
+                                    "author": "$commit_details.author",
+                                    "repository": "$commit_details.repository",
+                                    "file_changes": "$file_changes"
+                                },
+                                "else": "$$REMOVE"
+                            }
+                        }
+                    }
+                }
+            },
+
+            # Stage 7: Filter out issues without commits
+            {
+                "$match": {
+                    "commits": {"$ne": []}
+                }
+            }
+        ]
+
+        cursor = self.jira_issues_collection.aggregate(pipeline)
+        results = await cursor.to_list(length=None)
+
+        logger.info("Found %d issues with commits for epic %s", len(results), epic_key)
+        return results
 
     async def get_epic_data_aggregated(self, epic_key: str) -> List[Dict[str, Any]]:
         """
@@ -440,79 +636,57 @@ class CodeAnalyzer:
 
     async def process_epic_analysis(self, epic_key: str) -> None:
         """
-        Main processing function: analyze all code changes in an epic using aggregation
+        Main processing function: analyze all code changes in an epic by JIRA issue
         
         Args:
             epic_key: The epic ticket ID to analyze
         """
-        logger.info("Starting analysis for epic %s", epic_key)
+        logger.info("Starting issue-level analysis for epic %s", epic_key)
 
-        # Get all data in a single aggregation query
-        epic_data = await self.get_epic_data_aggregated(epic_key)
+        # Get all data grouped by issue
+        epic_issues = await self.get_epic_data_by_issue(epic_key)
 
         total_analyses = 0
-        processed_files = 0
+        processed_issues = 0
         errors = 0
-        unique_issues = set()
 
-        for data in epic_data:
-            issue_key = data.get('issue_key', 'unknown')
-            commit_id = data.get('commit_id', '')
-            filename = data.get('filename', '')
-
-            unique_issues.add(issue_key)
-
-            if not commit_id or not filename:
-                logger.warning("Skipping incomplete data for issue %s", issue_key)
+        for issue_data in epic_issues:
+            issue_key = issue_data.get('issue_key', 'unknown')
+            
+            if not issue_key:
+                logger.warning("Skipping issue with no key")
                 continue
 
-            logger.info("Analyzing file %s in commit %s for issue %s", filename, commit_id[:8],
-                        issue_key)
+            logger.info("Analyzing issue %s with %d commits", issue_key, len(issue_data.get('commits', [])))
 
-            # Create mock commit and file_change objects for compatibility with existing methods
-            commit_data = {
-                'commit_id': commit_id,
-                'message': data.get('commit_message', ''),
-                'author': data.get('commit_author', {}),
-                'repository': data.get('repository', '')
-            }
-
-            file_change_data = {
-                'filename': filename,
-                'status': data.get('file_status', ''),
-                'additions': data.get('file_additions', 0),
-                'deletions': data.get('file_deletions', 0),
-                'changes': data.get('file_changes', 0),
-                'patch': data.get('file_patch', '')
-            }
-
-            # Generate analysis questions
-            questions = self._generate_analysis_questions(file_change_data, commit_data)
+            # Generate analysis questions for the entire issue
+            questions = self._generate_issue_analysis_questions(issue_data)
 
             for question_data in questions:
                 try:
                     # Check if we already have this analysis
                     existing = await self.code_analysis_collection.find_one({
-                        "epic_key":
-                        epic_key,
-                        "issue_key":
-                        issue_key,
-                        "commit_id":
-                        commit_id,
-                        "filename":
-                        filename,
-                        "analysis_type":
-                        question_data['type']
+                        "epic_key": epic_key,
+                        "issue_key": issue_key,
+                        "analysis_type": question_data['type']
                     })
 
                     if existing:
-                        logger.debug("Analysis already exists for %s:%s:%s (%s)", issue_key,
-                                     commit_id[:8], filename, question_data['type'])
+                        logger.debug("Analysis already exists for %s (%s)", issue_key, question_data['type'])
                         continue
 
                     # Get additional context from MCP server if configured
-                    mcp_context = await self.get_mcp_context(filename,
-                                                             commit_data.get('repository', ''))
+                    # Use the first repository found in the commits
+                    repositories = set()
+                    for commit in issue_data.get('commits', []):
+                        repo = commit.get('repository', '')
+                        if repo:
+                            repositories.add(repo)
+                    
+                    mcp_context = ""
+                    if repositories:
+                        first_repo = next(iter(repositories))
+                        mcp_context = await self.get_mcp_context(issue_key, first_repo)
 
                     # Enhance question with MCP context if available
                     enhanced_question = question_data['question']
@@ -526,48 +700,59 @@ class CodeAnalyzer:
                     analysis_doc = {
                         'epic_key': epic_key,
                         'issue_key': issue_key,
-                        'commit_id': commit_id,
-                        'repository': commit_data.get('repository', ''),
-                        'filename': filename,
                         'analysis_type': question_data['type'],
                         'question': question_data['question'],
                         'response': response,
                         'model_used': self.openai_model,
                         'timestamp': datetime.datetime.now(datetime.timezone.utc),
-                        'file_change_stats': {
-                            'status': file_change_data.get('status', ''),
-                            'additions': file_change_data.get('additions', 0),
-                            'deletions': file_change_data.get('deletions', 0),
-                            'changes': file_change_data.get('changes', 0)
+                        'issue_stats': {
+                            'commit_count': len(issue_data.get('commits', [])),
+                            'repositories': list(repositories),
+                            'total_file_changes': sum(len(commit.get('file_changes', [])) 
+                                                    for commit in issue_data.get('commits', []))
                         }
                     }
 
                     # Store in MongoDB
-                    await self.store_analysis_in_mongodb(analysis_doc)
+                    await self.store_issue_analysis_in_mongodb(analysis_doc)
                     total_analyses += 1
 
-                    logger.info("Completed %s analysis for %s:%s", question_data['type'], issue_key,
-                                filename)
+                    logger.info("Completed %s analysis for issue %s", question_data['type'], issue_key)
 
-                except (APIConnectionError, APITimeoutError) as e:
-                    logger.error("OpenAI connection error analyzing %s:%s:%s (%s): %s", issue_key,
-                                 commit_id[:8], filename, question_data['type'], e)
-                    errors += 1
-                except APIError as e:
-                    logger.error("OpenAI API error analyzing %s:%s:%s (%s): %s", issue_key,
-                                 commit_id[:8], filename, question_data['type'], e)
-                    errors += 1
-                except (KeyError, AttributeError, ValueError) as e:
-                    logger.error("Data processing error analyzing %s:%s:%s (%s): %s", issue_key,
-                                 commit_id[:8], filename, question_data['type'], e)
+                except Exception as e:
+                    logger.error("Error analyzing issue %s (%s): %s", issue_key, question_data['type'], e)
                     errors += 1
 
-            processed_files += 1
+            processed_issues += 1
 
         logger.info(
-            "Epic analysis complete: %d issues processed, %d files analyzed, "
-            "%d total analyses, %d errors", len(unique_issues), processed_files, total_analyses,
-            errors)
+            "Epic analysis complete: %d issues processed, %d total analyses, %d errors", 
+            processed_issues, total_analyses, errors)
+
+    async def store_issue_analysis_in_mongodb(self, analysis_data: Dict[str, Any]):
+        """
+        Store issue-level code analysis results in MongoDB
+        
+        Args:
+            analysis_data: Dictionary containing analysis results
+        """
+        analysis_data['last_updated'] = datetime.datetime.now(datetime.timezone.utc)
+
+        # Create a unique filter based on epic, issue, and analysis type
+        filter_query = {
+            "epic_key": analysis_data["epic_key"],
+            "issue_key": analysis_data["issue_key"],
+            "analysis_type": analysis_data["analysis_type"]
+        }
+
+        # Upsert the analysis data
+        result = await self.code_analysis_collection.replace_one(filter_query,
+                                                                 analysis_data,
+                                                                 upsert=True)
+
+        action = "inserted" if result.upserted_id else "updated"
+        logger.debug("Analysis %s in code_analysis collection for issue %s", action,
+                     analysis_data["issue_key"])
 
     async def setup_database_indexes(self) -> None:
         """Set up database indexes for efficient querying on the code_analysis collection"""

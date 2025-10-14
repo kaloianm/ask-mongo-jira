@@ -48,7 +48,7 @@ python analyze_code_changes.py EPIC-123 --openai-api-key your-api-key --openai-m
 
 1. **`fetch_jira_epic.py`** - Fetches all SERVER tickets in a JIRA epic and stores them in MongoDB
 2. **`fetch_code_changes.py`** - Extracts code changes from local Git repositories for commits referenced in JIRA issues
-3. **`analyze_code_changes.py`** - Uses OpenAI API to analyze code changes with MongoDB aggregation for optimal performance
+3. **`analyze_code_changes.py`** - Uses OpenAI API to analyze code changes at the JIRA issue level with MongoDB aggregation for optimal performance
 
 ## Database Performance
 
@@ -61,7 +61,7 @@ python analyze_code_changes.py EPIC-123 --openai-api-key your-api-key --openai-m
 - **`jira_issues`** - JIRA issue details with development information
 - **`commits`** - Git commit metadata (author, message, stats, etc.)
 - **`file_changes`** - Individual file changes per commit with diffs
-- **`code_analysis`** - OpenAI analysis results for code changes
+- **`code_analysis`** - OpenAI analysis results for complete JIRA issues (not individual files)
 
 ## OpenAI Integration
 
@@ -85,7 +85,7 @@ Example configuration sections:
 system_prompt = "Your custom system prompt..."
 
 [analysis_questions.change_summary]
-template = "Your custom question template with {filename}, {patch}, etc."
+template = "Your custom question template with {issue_key}, {issue_summary}, {commits_summary}, etc."
 ```
 
 ## MCP Server Integration
