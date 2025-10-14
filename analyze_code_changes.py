@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-analyze_code_changes - A tool for analyzing code changes using OpenAI API based on commits and file changes
-stored in MongoDB by fetch_jira_epic.py and fetch_code_changes.py.
+analyze_code_changes - A tool for analyzing code changes using OpenAI API based on commits and file
+changes stored in MongoDB by fetch_jira_epic.py and fetch_code_changes.py.
 
 Usage:
     python analyze_code_changes.py EPIC-123 --openai-api-key your-api-key
@@ -44,12 +44,14 @@ import argparse
 import asyncio
 import datetime
 from typing import Dict, Any, List
+from pathlib import Path
 
 # Third-party imports
 from openai import AsyncOpenAI
 from openai import APIError, APIConnectionError, APITimeoutError
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
+import tomli
 
 # Load environment variables from .env file
 load_dotenv()
@@ -65,11 +67,24 @@ def setup_logging(level: str = "INFO") -> None:
                         datefmt='%Y-%m-%d %H:%M:%S')
 
 
+def load_config(config_path: str = "config.toml") -> Dict[str, Any]:
+    """Load configuration from TOML file"""
+    if not Path(config_path).exists():
+        config_path = Path(__file__).parent / "config.toml"
+
+    try:
+        with open(config_path, 'rb') as f:
+            return tomli.load(f)
+    except (FileNotFoundError, tomli.TOMLDecodeError) as e:
+        logger.error("Error loading configuration file %s: %s", config_path, e)
+        raise ValueError(f"Could not load configuration from {config_path}: {e}") from e
+
+
 class CodeAnalyzer:
     """Main class for analyzing code changes using OpenAI API"""
 
     def __init__(self, mongodb_url: str, openai_api_key: str, openai_base_url: str,
-                 openai_model: str, mcp_server_url: str):
+                 openai_model: str, mcp_server_url: str, config: Dict[str, Any]):
         """Initialize with configuration parameters"""
         # Store configuration
         self.mongodb_url = mongodb_url
@@ -77,6 +92,7 @@ class CodeAnalyzer:
         self.openai_base_url = openai_base_url
         self.openai_model = openai_model
         self.mcp_server_url = mcp_server_url
+        self.config = config
 
         # Log configuration
         logger.info("Initializing CodeAnalyzer with configuration:")
@@ -178,72 +194,45 @@ class CodeAnalyzer:
         commit_message = commit_data.get('message', '')
         author = commit_data.get('author', {}).get('name', 'Unknown')
 
+        # Template variables for string formatting
+        template_vars = {
+            'filename': filename,
+            'status': status,
+            'patch': patch,
+            'commit_message': commit_message,
+            'author': author
+        }
+
         questions = []
+        questions_config = self.config.get('analysis_questions', {})
 
         # Change summary question
+        change_summary_config = questions_config.get('change_summary', {})
         questions.append({
             'type':
-            'change_summary',
+            change_summary_config.get('type', 'change_summary'),
             'question':
-            f"""Please analyze this code change and provide a concise summary:
-
-File: {filename}
-Change Type: {status}
-Commit Message: {commit_message}
-Author: {author}
-
-Code Diff:
-{patch}
-
-Please provide:
-1. A brief summary of what was changed
-2. The likely purpose/intention of this change
-3. Key technical details"""
+            change_summary_config.get('template', '').format(**template_vars)
         })
 
-        # Potential issues question
-        if patch and len(patch) > 50:  # Only for substantial changes
+        # Potential issues question (only for substantial changes)
+        min_patch_length = questions_config.get('min_patch_length', 50)
+        if patch and len(patch) > min_patch_length:
+            potential_issues_config = questions_config.get('potential_issues', {})
             questions.append({
                 'type':
-                'potential_issues',
+                potential_issues_config.get('type', 'potential_issues'),
                 'question':
-                f"""Please review this code change for potential issues:
-
-File: {filename}
-Change Type: {status}
-Commit Message: {commit_message}
-
-Code Diff:
-{patch}
-
-Please identify:
-1. Any potential bugs or logical errors
-2. Performance concerns
-3. Security implications
-4. Code quality issues (naming, structure, etc.)
-5. Missing error handling or edge cases"""
+                potential_issues_config.get('template', '').format(**template_vars)
             })
 
         # Impact assessment question
+        impact_assessment_config = questions_config.get('impact_assessment', {})
         questions.append({
             'type':
-            'impact_assessment',
+            impact_assessment_config.get('type', 'impact_assessment'),
             'question':
-            f"""Please assess the potential impact of this code change:
-
-File: {filename}
-Change Type: {status}
-Commit Message: {commit_message}
-
-Code Diff:
-{patch}
-
-Please evaluate:
-1. What components/modules might be affected by this change
-2. Potential breaking changes for API consumers
-3. Database/schema changes implications
-4. Performance impact (positive or negative)
-5. Testing requirements this change would need"""
+            impact_assessment_config.get('template', '').format(**template_vars)
         })
 
         return questions
@@ -284,18 +273,24 @@ Please evaluate:
         try:
             logger.debug("Sending question to OpenAI (model: %s)", self.openai_model)
 
+            # Get OpenAI configuration
+            openai_config = self.config.get('openai', {})
+            system_prompt = openai_config.get(
+                'system_prompt', 'You are an expert software engineer analyzing code changes.')
+
             # Use the new OpenAI v2+ async client
-            response = await self.openai_client.chat.completions.create(
-                model=self.openai_model,
-                messages=[{
-                    "role":
-                    "system",
-                    "content":
-                    "You are an expert software engineer analyzing code changes. Provide detailed, technical analysis focusing on code quality, potential issues, and impact assessment."
-                }, {
-                    "role": "user",
-                    "content": question
-                }])
+            response = await self.openai_client.chat.completions.create(model=self.openai_model,
+                                                                        messages=[{
+                                                                            "role":
+                                                                            "system",
+                                                                            "content":
+                                                                            system_prompt
+                                                                        }, {
+                                                                            "role":
+                                                                            "user",
+                                                                            "content":
+                                                                            question
+                                                                        }])
 
             return response.choices[0].message.content.strip()
 
@@ -619,12 +614,21 @@ async def main():
         logger.error("OpenAI API key is required. Set the OPENAI_API_KEY environment variable")
         return
 
+    # Load configuration
+    try:
+        config = load_config()
+        logger.info("Configuration loaded successfully")
+    except ValueError as e:
+        logger.error("Failed to load configuration: %s", e)
+        return
+
     # Initialize the analyzer
     analyzer = CodeAnalyzer(mongodb_url=mongodb_url,
                             openai_api_key=openai_api_key,
                             openai_base_url=openai_base_url,
                             openai_model=openai_model,
-                            mcp_server_url=mcp_server_url)
+                            mcp_server_url=mcp_server_url,
+                            config=config)
 
     try:
         # Set up database indexes

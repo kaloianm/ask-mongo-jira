@@ -21,6 +21,12 @@ cp .env.example .env
 # Edit .env with your actual credentials
 ```
 
+4. Copy `config.toml.example` to `config.toml` and customize analysis questions:
+```bash
+cp config.toml.example config.toml
+# Edit config.toml to customize AI prompts and analysis questions
+```
+
 ## Usage
 
 ### Fetch Jira Epic and store in MongoDB:
@@ -64,6 +70,23 @@ The `analyze_code_changes.py` script uses OpenAI API v2.3.0 for code analysis. I
 - **Multiple models** (gpt-4, gpt-3.5-turbo, etc.)
 - **Custom base URLs** for OpenAI-compatible APIs
 - **Robust error handling** with specific exception types
+- **Configurable prompts** via TOML configuration file
+
+## Configuration
+
+The analysis behavior can be customized via the `config.toml` file:
+
+- **Analysis Questions**: Customize the prompts sent to OpenAI for different analysis types
+- **OpenAI Parameters**: Customize the system prompt
+
+Example configuration sections:
+```toml
+[openai]
+system_prompt = "Your custom system prompt..."
+
+[analysis_questions.change_summary]
+template = "Your custom question template with {filename}, {patch}, etc."
+```
 
 ## MCP Server Integration
 

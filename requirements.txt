@@ -8,6 +8,7 @@ motor==3.7.1
 python-dotenv==1.1.1
 requests==2.32.5
 GitPython==3.1.45
+tomli==2.2.1
 
 # Development tools
 yapf==0.43.0
