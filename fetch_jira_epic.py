@@ -44,7 +44,7 @@ def setup_logging(level: str = "INFO") -> None:
 class JiraIssueFetcher:
     """Main class for querying Jira"""
 
-    def __init__(self, jira_url: str = None, jira_token: str = None, mongodb_url: str = None):
+    def __init__(self, jira_url: str, jira_token: str, mongodb_url):
         """Initialize with configuration parameters"""
         # Store configuration
         self.jira_url = jira_url

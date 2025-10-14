@@ -9,5 +9,8 @@
 		"editor.formatOnSave": true,
 		"editor.defaultFormatter": "eeyore.yapf",
 		"editor.formatOnType": false
+	},
+	"settings": {
+		"python.analysis.typeCheckingMode": "off"
 	}
 }

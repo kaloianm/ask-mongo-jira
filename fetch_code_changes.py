@@ -69,7 +69,7 @@ def setup_logging(level: str = "INFO") -> None:
 class GitCodeFetcher:
     """Main class for fetching code changes from local Git repositories based on MongoDB commit data"""
 
-    def __init__(self, mongodb_url: str = None, git_repos_path: str = None):
+    def __init__(self, mongodb_url: str, git_repos_path: str):
         """Initialize with configuration parameters"""
         # Store configuration
         self.mongodb_url = mongodb_url

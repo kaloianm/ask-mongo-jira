@@ -68,12 +68,8 @@ def setup_logging(level: str = "INFO") -> None:
 class CodeAnalyzer:
     """Main class for analyzing code changes using OpenAI API"""
 
-    def __init__(self,
-                 mongodb_url: str = None,
-                 openai_api_key: str = None,
-                 openai_base_url: str = None,
-                 openai_model: str = None,
-                 mcp_server_url: str = None):
+    def __init__(self, mongodb_url: str, openai_api_key: str, openai_base_url: str,
+                 openai_model: str, mcp_server_url: str):
         """Initialize with configuration parameters"""
         # Store configuration
         self.mongodb_url = mongodb_url
