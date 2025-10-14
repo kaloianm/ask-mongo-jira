@@ -4,7 +4,7 @@ analyze_code_changes - A tool for analyzing code changes using OpenAI API based 
 changes stored in MongoDB by fetch_jira_epic.py and fetch_code_changes.py.
 
 Usage:
-    python analyze_code_changes.py EPIC-123 --openai-api-key your-api-key
+    python analyze_code_changes.py EPIC-123
 
 Environment Variables:
     MONGODB_URL - MongoDB connection URL (required)
@@ -695,7 +695,9 @@ class CodeAnalyzer:
 
 
 async def main():
-    """Main function"""
+    """
+    Main function
+    """
     parser = argparse.ArgumentParser(
         description="Analyze code changes using OpenAI API for commits in a JIRA epic")
     parser.add_argument("epic", help="Epic ticket ID to analyze (e.g., SPM-1234)")

@@ -21,6 +21,7 @@ import datetime
 import logging
 import argparse
 import asyncio
+from urllib.parse import urlparse
 
 from typing import Dict, Any
 
@@ -73,6 +74,26 @@ class JiraIssueFetcher:
         self.db = self.mongodb_client["ask-mongo-jira"]
         self.collection = self.db["jira_issues"]
 
+    def _is_allowed_repository(self, url: str) -> bool:
+        """
+        Check if a repository URL belongs to allowed organizations
+        """
+        parsed = urlparse(url)
+        path_parts = parsed.path.strip('/').split('/')
+
+        # We need at least 2 parts: owner and repo
+        if len(path_parts) < 2:
+            raise ValueError("Invalid GitHub commit URL: insufficient path components")
+
+        owner = path_parts[0]
+        repo = path_parts[1]
+
+        # Validate owner and repo are non-empty
+        if not owner or not repo:
+            raise ValueError("Invalid GitHub commit URL: owner or repo is empty")
+
+        return owner in ['mongodb', '10gen']
+
     def _get_development_info_via_api(self, issue) -> Dict[str, Any]:
         """
         Get development information using Jira's REST API directly
@@ -117,16 +138,28 @@ class JiraIssueFetcher:
                 for detail in data['detail']:
                     if 'repositories' in detail:
                         for repo in detail['repositories']:
+                            repo_url = repo.get('url')
+                            if not self._is_allowed_repository(repo_url):
+                                continue
+
                             # Extract commits
                             if 'commits' in repo:
                                 for commit in repo['commits']:
                                     commit_info = {
-                                        'id': commit.get('id', commit.get('displayId', None)),
-                                        'message': commit.get('message', None),
-                                        'author': commit.get('author', {}).get('name', None),
-                                        'timestamp': commit.get('authorTimestamp', None),
-                                        'url': commit.get('url', None),
-                                        'raw': commit,
+                                        'id':
+                                        commit.get('id', commit.get('displayId', None)),
+                                        'message':
+                                        commit.get('message', None),
+                                        'author':
+                                        commit.get('author', {}).get('name', None),
+                                        'timestamp':
+                                        datetime.datetime.fromisoformat(
+                                            commit.get('authorTimestamp').replace('Z', '+00:00'))
+                                        if commit.get('authorTimestamp') else None,
+                                        'url':
+                                        commit.get('url', None),
+                                        'raw':
+                                        commit,
                                     }
                                     dev_info['commits'].append(commit_info)
 
@@ -135,7 +168,8 @@ class JiraIssueFetcher:
                                 for branch in repo['branches']:
                                     branch_info = {
                                         'name': branch.get('name', None),
-                                        'url': branch.get('url', None)
+                                        'url': branch.get('url', None),
+                                        'raw': branch,
                                     }
                                     dev_info['branches'].append(branch_info)
 
@@ -147,7 +181,8 @@ class JiraIssueFetcher:
                                         'title': pr.get('title', None),
                                         'status': pr.get('status', None),
                                         'url': pr.get('url', None),
-                                        'author': pr.get('author', {}).get('name', None)
+                                        'author': pr.get('author', {}).get('name', None),
+                                        'raw': pr,
                                     }
                                     dev_info['pull_requests'].append(pr_info)
 
@@ -177,6 +212,12 @@ class JiraIssueFetcher:
             # Extract commits
             if hasattr(development, 'commits'):
                 for commit in development.commits:
+                    commit_url = getattr(commit, 'url', None)
+
+                    # Only process commits from mongodb/* and 10gen/* repositories
+                    if not self._is_allowed_repository(commit_url):
+                        continue
+
                     commit_info = {
                         'id':
                         getattr(commit, 'id', None),
@@ -186,10 +227,11 @@ class JiraIssueFetcher:
                         getattr(commit, 'author', {}).get('name', None) if hasattr(
                             commit, 'author') else None,
                         'timestamp':
-                        str(getattr(commit, 'timestamp', None)) if getattr(
-                            commit, 'timestamp', None) else None,
+                        datetime.datetime.fromisoformat(
+                            str(getattr(commit, 'timestamp', None)).replace('Z', '+00:00'))
+                        if getattr(commit, 'timestamp', None) else None,
                         'url':
-                        getattr(commit, 'url', None),
+                        commit_url,
                         'raw':
                         commit,
                     }
@@ -200,7 +242,8 @@ class JiraIssueFetcher:
                 for branch in development.branches:
                     branch_info = {
                         'name': getattr(branch, 'name', None),
-                        'url': getattr(branch, 'url', None)
+                        'url': getattr(branch, 'url', None),
+                        'raw': branch,
                     }
                     dev_info['branches'].append(branch_info)
 
@@ -219,6 +262,8 @@ class JiraIssueFetcher:
                         'author':
                         getattr(pr, 'author', {}).get('name', None)
                         if hasattr(pr, 'author') else None,
+                        'raw':
+                        pr,
                     }
                     dev_info['pull_requests'].append(pr_info)
 
@@ -258,14 +303,12 @@ class JiraIssueFetcher:
                 issue.fields.description,
                 'status':
                 issue.fields.status.name,
-                'assignee':
-                issue.fields.assignee.displayName if issue.fields.assignee else None,
-                'reporter':
-                issue.fields.reporter.displayName if issue.fields.reporter else None,
                 'created':
-                str(issue.fields.created),
+                datetime.datetime.fromisoformat(issue.fields.created.replace('Z', '+00:00'))
+                if issue.fields.created else None,
                 'updated':
-                str(issue.fields.updated),
+                datetime.datetime.fromisoformat(issue.fields.updated.replace('Z', '+00:00'))
+                if issue.fields.updated else None,
                 'issue_type':
                 issue.fields.issuetype.name,
                 'priority':
@@ -291,7 +334,7 @@ class JiraIssueFetcher:
             return
 
         # Add timestamp for when records were last updated
-        current_time = datetime.datetime.utcnow()
+        current_time = datetime.datetime.now(datetime.timezone.utc)
 
         # Prepare bulk operations for batch processing
         bulk_operations = []

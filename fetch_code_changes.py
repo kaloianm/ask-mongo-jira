@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-fetch_code_changes - A tool for fetching code changes from local Git repositories based on git commits
-stored in MongoDB by fetch_jira_epic.py.
+fetch_code_changes - A tool for fetching code changes from local Git repositories based on git
+commits stored in MongoDB by fetch_jira_epic.py.
 
 Usage:
     python fetch_code_changes.py
 
 Environment Variables:
     MONGODB_URL - MongoDB connection URL (required)
-    GIT_REPOS_PATH - Base path where Git repositories are located (optional, defaults to current directory)
+    GIT_REPOS_PATH - Base path where Git repositories are located (required)
 
 The script will:
 1. Query the "ask-mongo-jira" database's "jira_issues" collection for git commits
@@ -45,6 +45,7 @@ import asyncio
 import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Third-party imports
 import git
@@ -60,17 +61,23 @@ logger = logging.getLogger(__name__)
 
 
 def setup_logging(level: str = "INFO") -> None:
-    """Setup logging configuration"""
+    """
+    Setup logging configuration
+    """
     logging.basicConfig(level=getattr(logging, level.upper()),
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S')
 
 
 class GitCodeFetcher:
-    """Main class for fetching code changes from local Git repositories based on MongoDB commit data"""
+    """
+    Main class for fetching code changes from local Git repositories based on MongoDB commit data
+    """
 
     def __init__(self, mongodb_url: str, git_repos_path: str):
-        """Initialize with configuration parameters"""
+        """
+        Initialize with configuration parameters
+        """
         # Store configuration
         self.mongodb_url = mongodb_url
         self.git_repos_path = git_repos_path
@@ -91,22 +98,18 @@ class GitCodeFetcher:
         self.repo_cache = {}
 
     def _extract_owner_repo(self, commit_url):
-        # Remove trailing slash and split by '/'
-        parts = commit_url.rstrip('/').split('/')
+        """
+        Extract owner and repository name from a GitHub commit URL using urlparse
+        """
+        parsed = urlparse(commit_url)
+        path_parts = parsed.path.strip('/').split('/')
 
-        # Find the index of 'commit'
-        try:
-            commit_index = parts.index('commit')
-        except ValueError as exc:
-            raise ValueError("Invalid GitHub commit URL: 'commit' segment not found") from exc
+        # We need at least 2 parts: owner and repo
+        if len(path_parts) < 2:
+            raise ValueError("Invalid GitHub commit URL: insufficient path components")
 
-        # Ensure there are enough parts before 'commit' for owner and repo
-        if commit_index < 2:
-            raise ValueError("Invalid GitHub commit URL: not enough segments before 'commit'")
-
-        # Extract owner and repo (second and third parts before 'commit')
-        owner = parts[commit_index - 2]
-        repo = parts[commit_index - 1]
+        owner = path_parts[0]
+        repo = path_parts[1]
 
         # Validate owner and repo are non-empty
         if not owner or not repo:
@@ -240,12 +243,12 @@ class GitCodeFetcher:
                 'author': {
                     'name': commit.author.name,
                     'email': commit.author.email,
-                    'date': commit.authored_datetime.isoformat(),
+                    'date': commit.authored_datetime,
                 },
                 'committer': {
                     'name': commit.committer.name,
                     'email': commit.committer.email,
-                    'date': commit.committed_datetime.isoformat(),
+                    'date': commit.committed_datetime,
                 },
                 'message': commit.message,
                 'sha': commit.hexsha,
@@ -320,7 +323,8 @@ class GitCodeFetcher:
 
     async def process_jira_issues(self) -> None:
         """
-        Main processing function: iterate through JIRA issues and fetch commit details from local Git repositories.
+        Main processing function: iterate through JIRA issues and fetch commit details from local
+        Git repositories.
         """
         # Query all JIRA issues that have development info with commits
         cursor = self.jira_issues_collection.find(
@@ -362,7 +366,7 @@ class GitCodeFetcher:
                                 "jira_issues": issue_key
                             },
                             "$set": {
-                                "last_updated": datetime.datetime.utcnow()
+                                "last_updated": datetime.datetime.now(datetime.timezone.utc)
                             }
                         })
                         logger.debug("Added issue %s to existing commit %s", issue_key,
@@ -395,7 +399,9 @@ class GitCodeFetcher:
             issue_count, processed_commits, skipped_commits, errors)
 
     async def setup_database_indexes(self) -> None:
-        """Set up database indexes for efficient querying on both commits and file_changes collections"""
+        """
+        Set up database indexes for efficient querying on both commits and file_changes collections
+        """
         # Indexes for commits collection
         await self.commits_collection.create_index("commit_id",
                                                    unique=True,
@@ -418,14 +424,18 @@ class GitCodeFetcher:
             "Database indexes created successfully for commits and file_changes collections")
 
     async def close_mongodb_connection(self) -> None:
-        """Close MongoDB connection"""
+        """
+        Close MongoDB connection
+        """
         if self.mongodb_client:
             self.mongodb_client.close()
             logger.info("MongoDB connection closed")
 
 
 async def main():
-    """Main function"""
+    """
+    Main function
+    """
     parser = argparse.ArgumentParser(
         description="Fetch code changes from local Git repositories for commits stored in MongoDB")
     parser.add_argument("--log-level",
