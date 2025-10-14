@@ -157,10 +157,11 @@ class JiraIssueFetcher:
 
     def _extract_development_info(self, issue) -> Dict[str, Any]:
         """Extract development information (commits, branches, PRs) from a Jira issue"""
+
         dev_info = {'commits': [], 'branches': [], 'pull_requests': []}
 
-        # Try to get development information using the REST API
-        # This requires the issue to be expanded with 'devinfo'
+        # Try to get development information using the REST API. This requires the issue to be
+        # expanded with 'devinfo'.
         if hasattr(issue, 'fields') and hasattr(issue.fields, 'development'):
             development = issue.fields.development
 
@@ -220,12 +221,9 @@ class JiraIssueFetcher:
 
     def get_epic_issues(self, epic_key: str):
         """Get all issues from Core Server project that belong to a specific epic - returns an iterator"""
-        if not self.jira_client:
-            raise ValueError("Jira not configured. Set JIRA_URL and JIRA_API_TOKEN")
 
         # JQL to find all issues in Core Server project that belong to the epic
         jql = f'project = "Core Server" AND "Epic Link" = {epic_key}'
-
         logger.info("Searching for issues in epic %s using JQL: %s", epic_key, jql)
 
         # Search for issues with expanded fields
@@ -266,9 +264,7 @@ class JiraIssueFetcher:
             }
 
             # Extract development information if available
-            dev_info = self._extract_development_info(issue)
-            if dev_info:
-                issue_data['development'] = dev_info
+            issue_data['development'] = self._extract_development_info(issue)
 
             yield issue_data
 
