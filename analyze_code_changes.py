@@ -20,7 +20,7 @@ The script will:
 
 The aggregation approach reduces database round-trips and provides better performance by joining:
 - JIRA issues from the epic
-- Related commits that reference those issues  
+- Related commits referenced in the development.commits field of each issue
 - File changes for each commit
 All in a single MongoDB aggregation pipeline.
 
@@ -295,9 +295,7 @@ Please evaluate:
                 }, {
                     "role": "user",
                     "content": question
-                }],
-                max_tokens=2000,
-                temperature=0.1)
+                }])
 
             return response.choices[0].message.content.strip()
 
@@ -351,6 +349,7 @@ Please evaluate:
         logger.info("Fetching aggregated data for epic %s", epic_key)
 
         # MongoDB aggregation pipeline to join issues -> commits -> file_changes
+        # Using development.commits from jira_issues as the source for commit lookups
         pipeline = [
             # Stage 1: Match issues in the epic
             {
@@ -359,17 +358,25 @@ Please evaluate:
                 }
             },
 
-            # Stage 2: Lookup commits for each issue
+            # Stage 2: Unwind development.commits array to process each commit separately
+            {
+                "$unwind": {
+                    "path": "$development.commits",
+                    "preserveNullAndEmptyArrays": True
+                }
+            },
+
+            # Stage 3: Lookup commits using development.commits.id as foreign key
             {
                 "$lookup": {
                     "from": "commits",
-                    "localField": "key",
-                    "foreignField": "jira_issues",
+                    "localField": "development.commits.id",
+                    "foreignField": "commit_id",
                     "as": "commits"
                 }
             },
 
-            # Stage 3: Unwind commits array to process each commit separately
+            # Stage 4: Unwind commits array to process each commit separately
             {
                 "$unwind": {
                     "path": "$commits",
@@ -377,7 +384,7 @@ Please evaluate:
                 }
             },
 
-            # Stage 4: Lookup file changes for each commit
+            # Stage 5: Lookup file changes for each commit
             {
                 "$lookup": {
                     "from": "file_changes",
@@ -387,7 +394,7 @@ Please evaluate:
                 }
             },
 
-            # Stage 5: Unwind file changes to process each file separately
+            # Stage 6: Unwind file changes to process each file separately
             {
                 "$unwind": {
                     "path": "$file_changes",
@@ -395,7 +402,7 @@ Please evaluate:
                 }
             },
 
-            # Stage 6: Project the fields we need
+            # Stage 7: Project the fields we need
             {
                 "$project": {
                     "_id": 0,
@@ -415,7 +422,7 @@ Please evaluate:
                 }
             },
 
-            # Stage 7: Filter out documents without commits or file changes
+            # Stage 8: Filter out documents without commits or file changes
             {
                 "$match": {
                     "commit_id": {
