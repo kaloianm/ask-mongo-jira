@@ -71,7 +71,7 @@ class JiraIssueFetcher:
 
     def _get_development_info_via_api(self, issue) -> Dict[str, Any]:
         """Get development information using Jira's REST API directly"""
-        dev_info = {'commits': [], 'branches': [], 'pull_requests': [], 'repositories': []}
+        dev_info = {'commits': [], 'branches': [], 'pull_requests': []}
 
         # Get the internal issue ID (numeric) instead of the issue key
         issue_id = issue.id if hasattr(issue, 'id') else None
@@ -110,9 +110,6 @@ class JiraIssueFetcher:
                 for detail in data['detail']:
                     if 'repositories' in detail:
                         for repo in detail['repositories']:
-                            repo_name = repo.get('name', 'unknown')
-                            dev_info['repositories'].append(repo_name)
-
                             # Extract commits
                             if 'commits' in repo:
                                 for commit in repo['commits']:
@@ -122,7 +119,6 @@ class JiraIssueFetcher:
                                         'author': commit.get('author', {}).get('name', None),
                                         'timestamp': commit.get('authorTimestamp', None),
                                         'url': commit.get('url', None),
-                                        'repository': repo_name,
                                         'raw': commit,
                                     }
                                     dev_info['commits'].append(commit_info)
@@ -132,8 +128,7 @@ class JiraIssueFetcher:
                                 for branch in repo['branches']:
                                     branch_info = {
                                         'name': branch.get('name', None),
-                                        'url': branch.get('url', None),
-                                        'repository': repo_name
+                                        'url': branch.get('url', None)
                                     }
                                     dev_info['branches'].append(branch_info)
 
@@ -145,8 +140,7 @@ class JiraIssueFetcher:
                                         'title': pr.get('title', None),
                                         'status': pr.get('status', None),
                                         'url': pr.get('url', None),
-                                        'author': pr.get('author', {}).get('name', None),
-                                        'repository': repo_name
+                                        'author': pr.get('author', {}).get('name', None)
                                     }
                                     dev_info['pull_requests'].append(pr_info)
 
@@ -163,7 +157,7 @@ class JiraIssueFetcher:
 
     def _extract_development_info(self, issue) -> Dict[str, Any]:
         """Extract development information (commits, branches, PRs) from a Jira issue"""
-        dev_info = {'commits': [], 'branches': [], 'pull_requests': [], 'repositories': []}
+        dev_info = {'commits': [], 'branches': [], 'pull_requests': []}
 
         # Try to get development information using the REST API
         # This requires the issue to be expanded with 'devinfo'
@@ -186,9 +180,6 @@ class JiraIssueFetcher:
                             commit, 'timestamp', None) else None,
                         'url':
                         getattr(commit, 'url', None),
-                        'repository':
-                        getattr(commit, 'repository', {}).get('name', None) if hasattr(
-                            commit, 'repository') else None,
                         'raw':
                         commit,
                     }
@@ -198,13 +189,8 @@ class JiraIssueFetcher:
             if hasattr(development, 'branches'):
                 for branch in development.branches:
                     branch_info = {
-                        'name':
-                        getattr(branch, 'name', None),
-                        'url':
-                        getattr(branch, 'url', None),
-                        'repository':
-                        getattr(branch, 'repository', {}).get('name', None) if hasattr(
-                            branch, 'repository') else None
+                        'name': getattr(branch, 'name', None),
+                        'url': getattr(branch, 'url', None)
                     }
                     dev_info['branches'].append(branch_info)
 
@@ -223,9 +209,6 @@ class JiraIssueFetcher:
                         'author':
                         getattr(pr, 'author', {}).get('name', None)
                         if hasattr(pr, 'author') else None,
-                        'repository':
-                        getattr(pr, 'repository', {}).get('name', None) if hasattr(
-                            pr, 'repository') else None,
                     }
                     dev_info['pull_requests'].append(pr_info)
 
