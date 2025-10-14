@@ -13,7 +13,7 @@ Environment Variables:
 The script will:
 1. Query the "ask-mongo-jira" database's "jira_issues" collection for git commits
 2. For each unique commit, fetch the code changes from local Git repositories using GitPython
-3. Store the results in the "commits" collection
+3. Store the results in two collections: "commits" and "file_changes"
 
 The commits collection will contain documents with:
 - commit_id: The git commit SHA
@@ -21,9 +21,20 @@ The commits collection will contain documents with:
 - author: Commit author information
 - message: Commit message
 - timestamp: Commit timestamp
-- files_changed: List of files changed with their diffs
 - stats: Commit statistics (additions, deletions, total changes)
 - jira_issues: List of JIRA issue keys that reference this commit
+- last_updated: When this record was last updated
+
+The file_changes collection will contain documents with:
+- commit_id: The git commit SHA (indexed)
+- repository: The repository name
+- filename: The path of the changed file
+- status: Change type (added, removed, renamed, modified)
+- additions: Number of lines added
+- deletions: Number of lines deleted
+- changes: Total number of changes (additions + deletions)
+- patch: The actual diff/patch text
+- previous_filename: Previous filename (for renamed files)
 - last_updated: When this record was last updated
 """
 
@@ -74,6 +85,7 @@ class GitCodeFetcher:
         self.db = self.mongodb_client["ask-mongo-jira"]
         self.jira_issues_collection = self.db["jira_issues"]
         self.commits_collection = self.db["commits"]
+        self.file_changes_collection = self.db["file_changes"]
 
         # Cache for opened repositories
         self.repo_cache = {}
@@ -141,8 +153,7 @@ class GitCodeFetcher:
             logger.error("Invalid Git repository at: %s", repo_path)
             return None
 
-    async def fetch_commit_details(self, owner: str, repo: str,
-                                   commit_id: str) -> Optional[Dict[str, Any]]:
+    async def fetch_commit_details(self, owner: str, repo: str, commit_id: str) -> Optional[tuple]:
         """
         Fetch detailed commit information from local Git repository.
         
@@ -151,7 +162,7 @@ class GitCodeFetcher:
             commit_id: The git commit SHA
             
         Returns:
-            Dictionary with commit details or None if not found
+            Tuple of (commit_data, files_changed) or None if not found
         """
         try:
             repo_obj = self._get_repo(owner, repo)
@@ -222,7 +233,7 @@ class GitCodeFetcher:
             total_additions = sum(f['additions'] for f in files_changed)
             total_deletions = sum(f['deletions'] for f in files_changed)
 
-            # Prepare commit data
+            # Prepare commit data (without files_changed)
             commit_data = {
                 'commit_id': commit_id,
                 'repository': f"{owner}/{repo}",
@@ -238,7 +249,6 @@ class GitCodeFetcher:
                 },
                 'message': commit.message,
                 'sha': commit.hexsha,
-                'files_changed': files_changed,
                 'stats': {
                     'total': total_additions + total_deletions,
                     'additions': total_additions,
@@ -249,7 +259,7 @@ class GitCodeFetcher:
 
             logger.info("Successfully fetched commit %s from %s/%s (%d files changed)",
                         commit_id[:8], owner, repo, len(files_changed))
-            return commit_data
+            return commit_data, files_changed
 
         except GitCommandError as e:
             logger.error("Git command error fetching commit %s: %s", commit_id, e)
@@ -273,6 +283,40 @@ class GitCodeFetcher:
 
         action = "inserted" if result.upserted_id else "updated"
         logger.debug("Commit %s %s in commits collection", commit_data["commit_id"][:8], action)
+
+    async def store_file_changes_in_mongodb(self, commit_id: str, repository: str,
+                                            files_changed: List[Dict[str, Any]]):
+        """
+        Store file changes in the file_changes collection.
+        Args:
+            commit_id: The git commit SHA
+            repository: Repository name
+            files_changed: List of file change information
+        """
+        if not files_changed:
+            return
+
+        current_time = datetime.datetime.now(datetime.timezone.utc)
+
+        # First, remove any existing file changes for this commit
+        await self.file_changes_collection.delete_many({"commit_id": commit_id})
+
+        # Prepare file change documents
+        file_change_docs = []
+        for file_change in files_changed:
+            doc = {
+                'commit_id': commit_id,
+                'repository': repository,
+                'last_updated': current_time,
+                **file_change  # Include all file change fields
+            }
+            file_change_docs.append(doc)
+
+        # Insert all file changes
+        if file_change_docs:
+            result = await self.file_changes_collection.insert_many(file_change_docs)
+            logger.debug("Inserted %d file changes for commit %s", len(result.inserted_ids),
+                         commit_id[:8])
 
     async def process_jira_issues(self) -> None:
         """
@@ -330,26 +374,29 @@ class GitCodeFetcher:
                     continue
 
                 # Fetch detailed commit information from local Git repository
-                commit_data = await self.fetch_commit_details(owner, repo, commit_id)
+                commit_result = await self.fetch_commit_details(owner, repo, commit_id)
 
-                if commit_data:
-                    # Store in MongoDB with this JIRA issue
+                if commit_result:
+                    commit_data, files_changed = commit_result
+                    # Store commit data and file changes in separate collections
                     await self.store_commit_in_mongodb(commit_data, [issue_key])
+                    await self.store_file_changes_in_mongodb(commit_id, f"{owner}/{repo}",
+                                                             files_changed)
                     processed_commits += 1
                     logger.info("Successfully processed commit %s for issue %s", commit_id[:8],
                                 issue_key)
                 else:
                     logger.warning("Could not fetch commit %s from local Git for issue %s",
                                    commit_id, issue_key)
-                errors += 1
+                    errors += 1
 
         logger.info(
             "Processing complete: %d issues processed, %d commits processed, %d skipped, %d errors",
             issue_count, processed_commits, skipped_commits, errors)
 
     async def setup_database_indexes(self) -> None:
-        """Set up database indexes for efficient querying on the commits collection"""
-        # Create index on commit_id for uniqueness and efficient queries
+        """Set up database indexes for efficient querying on both commits and file_changes collections"""
+        # Indexes for commits collection
         await self.commits_collection.create_index("commit_id",
                                                    unique=True,
                                                    name="commit_id_unique")
@@ -357,7 +404,18 @@ class GitCodeFetcher:
         # Create index on jira_issues for finding commits by JIRA issue
         await self.commits_collection.create_index("jira_issues", name="jira_issues_index")
 
-        logger.info("Database indexes created successfully for commits collection")
+        # Indexes for file_changes collection
+        await self.file_changes_collection.create_index("commit_id", name="commit_id_index")
+
+        # Compound index for efficient querying by commit and filename
+        await self.file_changes_collection.create_index([("commit_id", 1), ("filename", 1)],
+                                                        name="commit_filename_index")
+
+        # Index on repository for filtering by repository
+        await self.file_changes_collection.create_index("repository", name="repository_index")
+
+        logger.info(
+            "Database indexes created successfully for commits and file_changes collections")
 
     async def close_mongodb_connection(self) -> None:
         """Close MongoDB connection"""

@@ -1,13 +1,13 @@
 # Core dependencies for AskMongoJIRA
-jira==3.5.2
-PyGithub==1.59.1
-openai==0.28.1
-motor==3.6.0
+jira==3.8.0
+PyGithub==2.8.1
+openai==2.3.0
+motor==3.7.1
 
 # Additional utilities
-python-dotenv==1.0.0
-requests==2.31.0
-GitPython==3.1.40
+python-dotenv==1.1.1
+requests==2.32.5
+GitPython==3.1.45
 
 # Development tools
-yapf==0.40.2
+yapf==0.43.0
