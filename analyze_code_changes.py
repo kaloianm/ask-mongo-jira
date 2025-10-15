@@ -296,11 +296,12 @@ class CodeAnalyzer:
 
         questions = []
 
-        analysis_questions_config = self.config.get('analysis_questions')
+        analysis_questions_config = self.config['analysis_questions']
 
         for question_key, question_config in analysis_questions_config.items():
             questions.append({
                 'analysis_type': question_key,
+                'analysis_version': question_config['version'],
                 'question': question_config['template'].format(**template_vars),
             })
 
@@ -433,15 +434,19 @@ class CodeAnalyzer:
                         "issue_key":
                         issue_key,
                         "analysis_type":
-                        question_data['analysis_type']
+                        question_data['analysis_type'],
+                        "analysis_version":
+                        question_data['analysis_version'],
                     })
 
                     if existing:
-                        logger.info("Skipping analysis for %s (%s)", issue_key,
-                                    question_data['analysis_type'])
+                        logger.info("Skipping analysis for %s (%s/%s)", issue_key,
+                                    question_data['analysis_type'],
+                                    question_data['analysis_version'])
                         continue
 
-                    logger.info("Analyzing %s (%s)", issue_key, question_data['analysis_type'])
+                    logger.info("Analyzing %s (%s/%s)", issue_key, question_data['analysis_type'],
+                                question_data['analysis_version'])
 
                     # TODO: Enhance question with MCP context if available
                     enhanced_question = question_data['question']
@@ -455,6 +460,7 @@ class CodeAnalyzer:
                         'issue_key': issue_key,
                         'commit_ids': questions['commit_ids'],
                         'analysis_type': question_data['analysis_type'],
+                        'analysis_version': question_data['analysis_version'],
                         'question': enhanced_question,
                         'classification': response['classification'],
                         'reasoning': response['reasoning'],

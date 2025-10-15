@@ -13,6 +13,7 @@ general, catching-up on technical debt that has accumulated over the years.
 # Questions to ask for each commit analysis
 
 [analysis_questions.categorize]
+version = 1
 template = """
 Given the following JIRA issue and its context, classify whether the code changes it performed are
 one of:
