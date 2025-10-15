@@ -19,8 +19,8 @@ Given the following JIRA issue and its context, classify whether the code change
 one of:
  - Catalog CRUD: Consumes the catalog as a reader only, but doesn't actually perform catalog changes
  - Catalog DDL: Consumes the catalog as a reader and writer, performs catalog changes
- - Catalog API Change: Changes the code of the catalog APIs
- - Something else: Doesn't meet any of the criteria above
+ - Catalog Implementation Change: Changes the code or the API of the catalog implementation
+ - Something Else: Doesn't meet any of the criteria above
 Provide 2-3 sentences justification.
 
 **JIRA issue**
@@ -33,14 +33,15 @@ Description: {issue_description}
 
 **Classification Criteria:**
 
-An issue is "Catalog CRUD" if:
+An issue is "Catalog CRUD" if one or more of the following apply:
  - Reads from the local catalog containers (e.g. `CollectionCatalog`, `AutoGet*`, `CatalogCache`, `acquireCollection*`, etc.)
  - Reads from the global catalog containers (e.g., `DatabaseShardingState`, `CollectionShardingState`, `ShardingState`)
  - Reads catalog metadata (UUIDs, namespaces, collection properties)
  - Reads directly from the durable catalog (`_mdb_catalog` or the `config.cache.databases/collections/chunks` collections)
  - Performs collection/database locking for read (S or IS mode)
 
-An issue is "Catalog DDL" if:
+An issue is "Catalog DDL" if one or more of the following apply:
+ - Modifies files in `src/mongo/db/s/` (weak signal, but often true)
  - Writes to the the durable catalog (`_mdb_catalog` or the `config.cache.databases/collections/chunks` collections)
  - Modifies the local catalog containers (e.g. `CollectionCatalog`)
  - Modifies the global catalog containers (e.g., `DatabaseShardingState/Runtime`, `CollectionShardingState/Runtime`, `ShardingState/Runtime`)
@@ -48,15 +49,16 @@ An issue is "Catalog DDL" if:
  - Calls to `CollectionCatalog::write()`, `establishConsistentCollection()`
  - Performs collection/database locking for write (X mode)
 
-An issue is "Catalog API Change" if:
- - Modifies files in `src/mongo/db/s/`
+An issue is "Catalog Implementation Change" if one or more of the following apply:
+ - Modifies files in `src/mongo/s` (weak signal, but often true)
+ - Modifies files in `src/mongo/db/s/` (weak signal, but often true)
  - Modifies catalog interfaces (CollectionCatalog, MDBCatalog, or durable_catalog)
  - Modifies DDL coordinator classes or DDL command implementations
- - Observes oplog entries for catalog changes
+ - Observes oplog entries for catalog changes via ShardServerOpObserver or ConfigServerOpObserver
  - Modifies catalog cache interfaces (CatalogCache, ShardServerCatalogCacheLoader)
 
 **Output Format:**  
-Classification: [Catalog CRUD | Catalog DDL | Catalog API Change | Something else]
+Classification: [Catalog CRUD | Catalog DDL | Catalog Implementation Change | Something Else]
 
 Reasoning: [2-3 sentences explaining why, citing specific files, functions, or patterns from the diff]
 """
