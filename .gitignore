@@ -4,9 +4,6 @@ python3-venv
 # Don't add the actual credentials accidentally to code
 .env
 
-# User-specific configuration files
-config.toml
-
 # Unsorted
 __pycache__/
 *.pyc

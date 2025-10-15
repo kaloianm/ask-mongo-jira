@@ -156,6 +156,52 @@ class GitCodeFetcher:
             logger.error("Invalid Git repository at: %s", repo_path)
             return None
 
+    def _is_commit_on_master_branch(self, repo_obj: Repo, commit_id: str) -> bool:
+        """
+        Check if a commit is on the master/main branch and not a cherry-pick.
+        
+        Args:
+            repo_obj: Git repository object
+            commit_id: The commit ID to check
+            
+        Returns:
+            True if commit is on master/main branch and not a cherry-pick
+        """
+        # Get the commit object
+        commit = repo_obj.commit(commit_id)
+
+        # Check if commit is reachable from master or main branch
+        master_branches = ['master', 'main']
+        is_on_master = False
+
+        for branch_name in master_branches:
+            try:
+                # Check if the branch exists
+                branch = repo_obj.heads[branch_name]
+                # Check if commit is an ancestor of this branch
+                if repo_obj.is_ancestor(commit, branch.commit):
+                    is_on_master = True
+                    break
+            except (IndexError, git.exc.GitCommandError):
+                # Branch doesn't exist or other git error
+                continue
+
+        if not is_on_master:
+            logger.debug("Commit %s is not on master/main branch", commit_id[:8])
+            return False
+
+        # Check if this commit is a cherry-pick by examining the commit message
+        # Cherry-picks typically have "(cherry picked from commit <sha>)" in the message
+        if "(cherry picked from commit" in commit.message.lower():
+            logger.debug("Commit %s appears to be a cherry-pick based on commit message",
+                         commit_id[:8])
+            return False
+
+        # Additional check: if commit has multiple parents with the same tree (indicating cherry-pick)
+        # This is more complex and may have false positives, so we'll skip it for now
+
+        return True
+
     async def fetch_commit_details(self, owner: str, repo: str, commit_id: str) -> Optional[tuple]:
         """
         Fetch detailed commit information from local Git repository.
@@ -180,6 +226,12 @@ class GitCodeFetcher:
             except GitCommandError as e:
                 logger.warning("Commit %s not found in repository %s/%s: %s", commit_id, owner,
                                repo, e)
+                return None
+
+            # Check if commit is on master branch and not a cherry-pick
+            if not self._is_commit_on_master_branch(repo_obj, commit_id):
+                logger.info("Skipping commit %s as it's not on master branch or is a cherry-pick",
+                            commit_id[:8])
                 return None
 
             # Get the diff for this commit

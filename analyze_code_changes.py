@@ -14,8 +14,10 @@ Environment Variables:
     MCP_SERVER_URL - MCP Server URL (optional, for enhanced code analysis with additional context)
 
 The script will:
-1. Query the "ask-mongo-jira" database using aggregation to join jira_issues -> commits -> file_changes
-2. For each JIRA issue, generate comprehensive analysis questions covering all commits and file changes
+1. Query the "ask-mongo-jira" database using aggregation to join
+   jira_issues -> commits -> file_changes
+2. For each JIRA issue, generate comprehensive analysis questions covering all commits and file
+   changes
 3. Store the analysis results in the "code_analysis" collection
 
 The aggregation approach reduces database round-trips and provides better performance by joining:
@@ -27,7 +29,8 @@ All in a single MongoDB aggregation pipeline.
 The code_analysis collection will contain documents with:
 - epic_key: The epic ticket ID
 - issue_key: The JIRA issue key
-- analysis_type: Type of analysis performed (e.g., "issue_summary", "issue_potential_issues", "issue_impact_assessment")
+- analysis_type: Type of analysis performed (e.g., "issue_summary", "issue_potential_issues",
+  "issue_impact_assessment")
 - question: The question sent to OpenAI
 - response: OpenAI's analysis response
 - model_used: The OpenAI model used for analysis
@@ -246,106 +249,56 @@ class CodeAnalyzer:
         Returns:
             List of dictionaries with 'type' and 'question' keys
         """
-        issue_key = issue_data.get('issue_key', '')
-        issue_summary = issue_data.get('issue_summary', '')
-        issue_description = issue_data.get('issue_description', '')
-        commits = issue_data.get('commits', [])
+        issue_key = issue_data.get('issue_key')
+        issue_summary = issue_data.get('issue_summary')
+        issue_description = issue_data.get('issue_description')
+        issue_commits = issue_data.get('commits', [])
 
-        # Collect all file changes across all commits
-        all_file_changes = []
-        commit_summaries = []
-        repositories = set()
+        # Collect all changes across all commits
+        commit_diffs = []
 
-        for commit in commits:
-            commit_id = commit.get('commit_id', '')
-            commit_message = commit.get('message', '')
-            commit_author = commit.get('author', {})
-            repository = commit.get('repository', '')
-            file_changes = commit.get('file_changes', [])
+        for commit in issue_commits:
+            commit_id = commit.get('commit_id')
+            commit_message = commit.get('message')
+            commit_author = commit.get('author')
+            file_changes = commit.get('file_changes')
 
-            if repository:
-                repositories.add(repository)
+            all_file_changes = []
+            for file_change in file_changes:
+                filename = file_change.get('filename')
+                status = file_change.get('status')
+                patch = file_change.get('patch')
 
-            if commit_message:
-                author_name = commit_author.get('name', 'Unknown') if isinstance(
-                    commit_author, dict) else 'Unknown'
-                commit_summaries.append(
-                    f"- {commit_id[:8]}: {commit_message.strip()} (by {author_name})")
+                all_file_changes.append(f"File: {filename}\nStatus: {status}\nPatch:\n{patch}\n")
 
-            all_file_changes.extend(file_changes)
+            single_commit = {
+                'id': commit_id,
+                'message': commit_message,
+                'author': commit_author,
+                'file_changes': '\n'.join(all_file_changes)
+            }
 
-        # Group file changes by filename to show consolidated changes
-        files_summary = {}
-        for file_change in all_file_changes:
-            filename = file_change.get('filename', '')
-            if filename:
-                if filename not in files_summary:
-                    files_summary[filename] = {
-                        'status': file_change.get('status', ''),
-                        'total_additions': 0,
-                        'total_deletions': 0,
-                        'patches': []
-                    }
-                files_summary[filename]['total_additions'] += file_change.get('additions', 0)
-                files_summary[filename]['total_deletions'] += file_change.get('deletions', 0)
-                if file_change.get('patch'):
-                    files_summary[filename]['patches'].append(file_change.get('patch', ''))
-
-        # Create file changes summary text
-        files_text = []
-        for filename, summary in files_summary.items():
-            files_text.append(
-                f"- {filename} ({summary['status']}, +{summary['total_additions']}/-{summary['total_deletions']} lines)"
-            )
+            commit_diffs.append(single_commit)
 
         # Template variables for string formatting
         template_vars = {
-            'issue_key': issue_key,
-            'issue_summary': issue_summary,
-            'issue_description': issue_description or 'No description available',
-            'repositories': ', '.join(repositories) if repositories else 'Unknown',
-            'commit_count': len(commits),
-            'file_count': len(files_summary),
-            'commits_summary':
-            '\n'.join(commit_summaries) if commit_summaries else 'No commit details available',
-            'files_summary': '\n'.join(files_text) if files_text else 'No file changes available'
+            'issue_key':
+            issue_key,
+            'issue_summary':
+            issue_summary,
+            'issue_description':
+            issue_description,
+            'commit_diffs':
+            '\n'.join(commit_diffs) if len(commit_diffs) > 0 else 'No commit details available',
         }
 
+        questions_config = self.config.get('analysis_questions', [])
+
         questions = []
-        questions_config = self.config.get('analysis_questions', {})
-
-        # Issue summary analysis
-        change_summary_config = questions_config.get('change_summary', {})
-        questions.append({
-            'type':
-            change_summary_config.get('type', 'issue_summary'),
-            'question':
-            change_summary_config.get('template', '').format(**template_vars)
-        })
-
-        # Only generate detailed analysis if there are substantial changes
-        total_changes = sum(summary['total_additions'] + summary['total_deletions']
-                            for summary in files_summary.values())
-        min_patch_length = questions_config.get('min_patch_length', 50)
-
-        if total_changes > min_patch_length:
-            # Potential issues analysis
-            potential_issues_config = questions_config.get('potential_issues', {})
-            questions.append({
-                'type':
-                potential_issues_config.get('type', 'issue_potential_issues'),
-                'question':
-                potential_issues_config.get('template', '').format(**template_vars)
-            })
 
         # Impact assessment analysis
-        impact_assessment_config = questions_config.get('impact_assessment', {})
-        questions.append({
-            'type':
-            impact_assessment_config.get('type', 'issue_impact_assessment'),
-            'question':
-            impact_assessment_config.get('template', '').format(**template_vars)
-        })
+        commit_summary_config = questions_config.get('commit_summary', {})
+        questions.append(commit_summary_config.get('template', '').format(**template_vars))
 
         return questions
 
@@ -566,11 +519,7 @@ class CodeAnalyzer:
         errors = 0
 
         for issue_data in epic_issues:
-            issue_key = issue_data.get('issue_key', 'unknown')
-
-            if not issue_key:
-                logger.warning("Skipping issue with no key")
-                continue
+            issue_key = issue_data.get('issue_key')
 
             logger.info("Analyzing issue %s with %d commits", issue_key,
                         len(issue_data.get('commits', [])))

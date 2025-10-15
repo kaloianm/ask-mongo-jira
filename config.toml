@@ -1,0 +1,66 @@
+# Example configuration file for analyze_code_changes.py
+# Copy this to config.toml and customize as needed
+# Contains prompts, questions, and OpenAI API settings
+
+[openai]
+# System prompt for OpenAI API - customize this to change how the AI analyzes code
+system_prompt = """
+You are a Senior Software Engineer at MongoDB.
+You need to convince the company that it needs to invest some significant resources in improving
+the core server code quality in order to increase the development velocity for implementing
+horizontally scalable features. This includes revaming the APIs that the core server teams have at
+their disposal for performing catalog changes, such as creating/dropping databases, collections and
+indexes; modifying catalog properties, such as collection types, collection visibility and in
+general, catching-up on technical debt that has accumulated over the years.
+"""
+
+[analysis_questions]
+# Questions to ask for each commit analysis
+
+[analysis_questions.categorize_commit]
+type = "issue_summary"
+template = """
+Given the following JIRA issue and its context, classify whether the code changes it performed are
+one of:
+ - Catalog CRUD: Consumes the catalog as a reader only, but doesn't actually perform catalog changes
+ - Catalog DDL: Consumes the catalog as a reader and writer, performs catalog changes
+ - Catalog API Change: Changes the code of the catalog APIs
+Provide 2-3 sentences justification.
+
+**JIRA issue**
+Issue: {issue_key}
+Summary: {issue_summary}
+Description: {issue_description}
+
+**Commit diffs**
+{commit_diffs}
+
+**Classification Criteria:**
+
+An issue is "Catalog CRUD" if:
+ - Reads from the local catalog containers (e.g. `CollectionCatalog`, `AutoGet*`, `CatalogCache`, `acquireCollection*`, etc.)
+ - Reads from the global catalog containers (e.g., `DatabaseShardingState`, `CollectionShardingState`, `ShardingState`)
+ - Reads catalog metadata (UUIDs, namespaces, collection properties)
+ - Reads directly from the durable catalog (`_mdb_catalog` or the `config.cache.databases/collections/chunks` collections)
+ - Performs collection/database locking for read (S or IS mode)
+
+An issue is "Catalog DDL" if:
+ - Writes to the the durable catalog (`_mdb_catalog` or the `config.cache.databases/collections/chunks` collections)
+ - Modifies the local catalog containers (e.g. `CollectionCatalog`)
+ - Modifies the global catalog containers (e.g., `DatabaseShardingState/Runtime`, `CollectionShardingState/Runtime`, `ShardingState/Runtime`)
+ - Modifies catalog metadata (UUIDs, namespaces, collection properties)
+ - Calls to `CollectionCatalog::write()`, `establishConsistentCollection()`
+ - Performs collection/database locking for write (X mode)
+
+An issue is "Catalog API Change" if:
+ - Modifies files in `src/mongo/db/s/`
+ - Modifies catalog interfaces (CollectionCatalog, MDBCatalog, or durable_catalog)
+ - Modifies DDL coordinator classes or DDL command implementations
+ - Observes oplog entries for catalog changes
+ - Modifies catalog cache interfaces (CatalogCache, ShardServerCatalogCacheLoader)
+
+**Output Format:**  
+Classification: [Catalog CRUD | Catalog DDL | Catalog API Change]
+
+Justification: [2-3 sentences explaining why, citing specific files, functions, or patterns from the diff]
+"""
