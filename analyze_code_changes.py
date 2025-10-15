@@ -183,6 +183,9 @@ class CodeAnalyzer:
             {
                 "$group": {
                     "_id": "$key",
+                    "epic_key": {
+                        "$first": "$epic"
+                    },
                     "issue_key": {
                         "$first": "$key"
                     },
@@ -235,7 +238,7 @@ class CodeAnalyzer:
                 else:
                     commit['file_changes'] = []
 
-        logger.info("Found %d issues with commits for epic %s", len(results), epic_key)
+        logger.info("Found %d issues with commits", len(results))
         return results
 
     def _generate_issue_analysis_questions(self, issue_data: Dict[str,
@@ -391,7 +394,8 @@ class CodeAnalyzer:
         filter_query = {
             "epic_key": analysis_data["epic_key"],
             "issue_key": analysis_data["issue_key"],
-            "analysis_type": analysis_data["analysis_type"]
+            "analysis_type": analysis_data["analysis_type"],
+            "analysis_version": analysis_data["analysis_version"],
         }
 
         # Upsert the analysis data
@@ -403,7 +407,7 @@ class CodeAnalyzer:
         logger.debug("Analysis %s in code_analysis collection for issue %s", action,
                      analysis_data["issue_key"])
 
-    async def process_epic_analysis(self, epic_key: str) -> None:
+    async def process_epic(self, epic_key: str) -> None:
         """
         Main processing function: analyze all code changes in an epic by JIRA issue
         
@@ -420,7 +424,8 @@ class CodeAnalyzer:
         errors = 0
 
         for issue_data in epic_issues:
-            issue_key = issue_data.get('issue_key')
+            issue_epic = issue_data['epic_key']
+            issue_key = issue_data['issue_key']
 
             # Generate analysis questions for the entire issue
             questions = self._generate_issue_analysis_questions(issue_data)
@@ -430,7 +435,7 @@ class CodeAnalyzer:
                     # Check if we already have this analysis
                     existing = await self.code_analysis_collection.find_one({
                         "epic_key":
-                        epic_key,
+                        issue_epic,
                         "issue_key":
                         issue_key,
                         "analysis_type":
@@ -456,7 +461,7 @@ class CodeAnalyzer:
 
                     # Prepare analysis document
                     analysis_doc = {
-                        'epic_key': epic_key,
+                        'epic_key': issue_epic,
                         'issue_key': issue_key,
                         'commit_ids': questions['commit_ids'],
                         'analysis_type': question_data['analysis_type'],
@@ -555,7 +560,7 @@ async def main():
 
         # Process the epic analysis
         logger.info("Starting code analysis for epic %s...", args.epic)
-        await analyzer.process_epic_analysis(args.epic)
+        await analyzer.process_epic(args.epic)
         logger.info("Code analysis completed successfully")
 
     finally:
