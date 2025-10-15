@@ -234,13 +234,13 @@ class GitCodeFetcher:
                             commit_id[:8])
                 return None
 
-            # Get the diff for this commit
+            # Get the diff for this commit with extended context using Git's unified context option
             if commit.parents:
-                # Compare with first parent
-                diff = commit.parents[0].diff(commit, create_patch=True)
+                # Compare with first parent, including 100 lines of context before and after changes
+                diff = commit.parents[0].diff(commit, create_patch=True, unified=100)
             else:
-                # Initial commit - compare with empty tree
-                diff = commit.diff(git.NULL_TREE, create_patch=True)
+                # Initial commit - compare with empty tree, including 100 lines of context
+                diff = commit.diff(git.NULL_TREE, create_patch=True, unified=100)
 
             # Extract file changes
             files_changed = []
@@ -442,8 +442,6 @@ class GitCodeFetcher:
                     logger.info("Successfully processed commit %s for issue %s", commit_id[:8],
                                 issue_key)
                 else:
-                    logger.warning("Could not fetch commit %s from local Git for issue %s",
-                                   commit_id, issue_key)
                     errors += 1
 
         logger.info(
