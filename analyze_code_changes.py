@@ -230,7 +230,6 @@ class CodeAnalyzer:
             for commit in commits:
                 commit_id = commit.get('commit_id')
                 if commit_id:
-                    # Fetch file changes for this commit
                     file_changes = await self._get_file_changes_for_commit(commit_id)
                     commit['file_changes'] = file_changes
                 else:
@@ -256,6 +255,7 @@ class CodeAnalyzer:
         issue_commits = issue_data.get('commits', [])
 
         # Collect all changes across all commits
+        commit_ids = []
         commit_diffs = []
 
         for commit in issue_commits:
@@ -279,6 +279,7 @@ class CodeAnalyzer:
                 Changes: {'\n'.join(all_file_changes)}\n{'-'*40}\n
             """
 
+            commit_ids.append(commit_id)
             commit_diffs.append(single_commit)
 
         # Template variables for string formatting
@@ -296,13 +297,14 @@ class CodeAnalyzer:
         questions = []
 
         analysis_questions_config = self.config.get('analysis_questions')
+
         for question_key, question_config in analysis_questions_config.items():
             questions.append({
                 'analysis_type': question_key,
                 'question': question_config['template'].format(**template_vars),
             })
 
-        return questions
+        return {'questions': questions, 'commit_ids': commit_ids}
 
     async def _analyze_with_openai(self, question: str) -> str:
         """
@@ -422,7 +424,7 @@ class CodeAnalyzer:
             # Generate analysis questions for the entire issue
             questions = self._generate_issue_analysis_questions(issue_data)
 
-            for question_data in questions:
+            for question_data in questions['questions']:
                 try:
                     # Check if we already have this analysis
                     existing = await self.code_analysis_collection.find_one({
@@ -451,6 +453,7 @@ class CodeAnalyzer:
                     analysis_doc = {
                         'epic_key': epic_key,
                         'issue_key': issue_key,
+                        'commit_ids': questions['commit_ids'],
                         'analysis_type': question_data['analysis_type'],
                         'question': enhanced_question,
                         'classification': response['classification'],
