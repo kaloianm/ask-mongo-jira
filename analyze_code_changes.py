@@ -49,7 +49,6 @@ from pathlib import Path
 
 # Third-party imports
 from openai import AsyncOpenAI
-from openai import APIError, APIConnectionError, APITimeoutError
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 import tomli
@@ -106,12 +105,6 @@ class CodeAnalyzer:
         # Initialize OpenAI client
         self.openai_client = AsyncOpenAI(api_key=self.openai_api_key, base_url=self.openai_base_url)
 
-        # TODO: Add MCP server integration for enhanced code context
-        # When mcp_server_url is provided, this could be used to:
-        # - Fetch additional code context from repositories
-        # - Get related code dependencies and relationships
-        # - Enhance analysis with broader codebase understanding
-
         # Initialize MongoDB client
         self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
         self.db = self.mongodb_client["ask-mongo-jira"]
@@ -120,45 +113,7 @@ class CodeAnalyzer:
         self.file_changes_collection = self.db["file_changes"]
         self.code_analysis_collection = self.db["code_analysis"]
 
-    async def get_epic_issues(self, epic_key: str) -> List[Dict[str, Any]]:
-        """
-        Get all SERVER tickets from the epic
-        
-        Args:
-            epic_key: The epic ticket ID (e.g., "SERVER-12345")
-            
-        Returns:
-            List of issue documents from MongoDB
-        """
-        logger.info("Fetching all issues for epic %s", epic_key)
-
-        # Find all issues in the epic
-        cursor = self.jira_issues_collection.find({"epic": epic_key})
-        issues = await cursor.to_list(length=None)
-
-        logger.info("Found %d issues in epic %s", len(issues), epic_key)
-        return issues
-
-    async def get_commits_for_issue(self, issue_key: str) -> List[Dict[str, Any]]:
-        """
-        Get all commits related to a specific JIRA issue
-        
-        Args:
-            issue_key: The JIRA issue key (e.g., "SERVER-67890")
-            
-        Returns:
-            List of commit documents from MongoDB
-        """
-        logger.debug("Fetching commits for issue %s", issue_key)
-
-        # Find commits that reference this JIRA issue
-        cursor = self.commits_collection.find({"jira_issues": issue_key})
-        commits = await cursor.to_list(length=None)
-
-        logger.debug("Found %d commits for issue %s", len(commits), issue_key)
-        return commits
-
-    async def get_file_changes_for_commit(self, commit_id: str) -> List[Dict[str, Any]]:
+    async def _get_file_changes_for_commit(self, commit_id: str) -> List[Dict[str, Any]]:
         """
         Get all file changes for a specific commit
         
@@ -170,245 +125,26 @@ class CodeAnalyzer:
         """
         logger.debug("Fetching file changes for commit %s", commit_id[:8])
 
-        # Find all file changes for this commit
         cursor = self.file_changes_collection.find({"commit_id": commit_id})
         file_changes = await cursor.to_list(length=None)
 
         logger.debug("Found %d file changes for commit %s", len(file_changes), commit_id[:8])
         return file_changes
 
-    def _generate_analysis_questions(self, file_change: Dict[str, Any],
-                                     commit_data: Dict[str, Any]) -> List[Dict[str, str]]:
+    async def _get_epic_data_by_issue(self, epic_key: str) -> List[Dict[str, Any]]:
         """
-        Generate different types of analysis questions for a file change
-        
-        Args:
-            file_change: File change document from MongoDB
-            commit_data: Commit document from MongoDB
-            
-        Returns:
-            List of dictionaries with 'type' and 'question' keys
-        """
-        filename = file_change.get('filename', '')
-        status = file_change.get('status', '')
-        patch = file_change.get('patch', '')
-        commit_message = commit_data.get('message', '')
-        author = commit_data.get('author', {}).get('name', 'Unknown')
-
-        # Template variables for string formatting
-        template_vars = {
-            'filename': filename,
-            'status': status,
-            'patch': patch,
-            'commit_message': commit_message,
-            'author': author
-        }
-
-        questions = []
-        questions_config = self.config.get('analysis_questions', {})
-
-        # Change summary question
-        change_summary_config = questions_config.get('change_summary', {})
-        questions.append({
-            'type':
-            change_summary_config.get('type', 'change_summary'),
-            'question':
-            change_summary_config.get('template', '').format(**template_vars)
-        })
-
-        # Potential issues question (only for substantial changes)
-        min_patch_length = questions_config.get('min_patch_length', 50)
-        if patch and len(patch) > min_patch_length:
-            potential_issues_config = questions_config.get('potential_issues', {})
-            questions.append({
-                'type':
-                potential_issues_config.get('type', 'potential_issues'),
-                'question':
-                potential_issues_config.get('template', '').format(**template_vars)
-            })
-
-        # Impact assessment question
-        impact_assessment_config = questions_config.get('impact_assessment', {})
-        questions.append({
-            'type':
-            impact_assessment_config.get('type', 'impact_assessment'),
-            'question':
-            impact_assessment_config.get('template', '').format(**template_vars)
-        })
-
-        return questions
-
-    def _generate_issue_analysis_questions(self, issue_data: Dict[str,
-                                                                  Any]) -> List[Dict[str, str]]:
-        """
-        Generate analysis questions for an entire JIRA issue (all commits and file changes)
-        
-        Args:
-            issue_data: Issue document with all commits and file changes
-            
-        Returns:
-            List of dictionaries with 'type' and 'question' keys
-        """
-        issue_key = issue_data.get('issue_key')
-        issue_summary = issue_data.get('issue_summary')
-        issue_description = issue_data.get('issue_description')
-        issue_commits = issue_data.get('commits', [])
-
-        # Collect all changes across all commits
-        commit_diffs = []
-
-        for commit in issue_commits:
-            commit_id = commit.get('commit_id')
-            commit_message = commit.get('message')
-            commit_author = commit.get('author')
-            file_changes = commit.get('file_changes')
-
-            all_file_changes = []
-            for file_change in file_changes:
-                filename = file_change.get('filename')
-                status = file_change.get('status')
-                patch = file_change.get('patch')
-
-                all_file_changes.append(f"File: {filename}\nStatus: {status}\nPatch:\n{patch}\n")
-
-            single_commit = {
-                'id': commit_id,
-                'message': commit_message,
-                'author': commit_author,
-                'file_changes': '\n'.join(all_file_changes)
-            }
-
-            commit_diffs.append(single_commit)
-
-        # Template variables for string formatting
-        template_vars = {
-            'issue_key':
-            issue_key,
-            'issue_summary':
-            issue_summary,
-            'issue_description':
-            issue_description,
-            'commit_diffs':
-            '\n'.join(commit_diffs) if len(commit_diffs) > 0 else 'No commit details available',
-        }
-
-        questions_config = self.config.get('analysis_questions', [])
-
-        questions = []
-
-        # Impact assessment analysis
-        commit_summary_config = questions_config.get('commit_summary', {})
-        questions.append(commit_summary_config.get('template', '').format(**template_vars))
-
-        return questions
-
-    async def get_mcp_context(self, filename: str, repository: str) -> str:
-        """
-        Get additional context from MCP server for enhanced code analysis
-        
-        Args:
-            filename: The file being analyzed
-            repository: The repository name
-            
-        Returns:
-            Additional context string or empty string if MCP not configured
-        """
-        if not self.mcp_server_url:
-            return ""
-
-        # TODO: Implement MCP server integration
-        # This could include:
-        # - Fetching related files and dependencies
-        # - Getting code structure and architecture context
-        # - Retrieving documentation and comments
-        logger.debug("MCP server integration not yet implemented for %s in %s", filename,
-                     repository)
-        return ""
-
-    async def analyze_with_openai(self, question: str) -> str:
-        """
-        Send a question to OpenAI and get the analysis response
-        
-        Args:
-            question: The analysis question to send to OpenAI
-            
-        Returns:
-            OpenAI's response text
-        """
-        try:
-            logger.debug("Sending question to OpenAI (model: %s)", self.openai_model)
-
-            # Get OpenAI configuration
-            openai_config = self.config.get('openai', {})
-            system_prompt = openai_config.get(
-                'system_prompt', 'You are an expert software engineer analyzing code changes.')
-
-            # Use the new OpenAI v2+ async client
-            response = await self.openai_client.chat.completions.create(model=self.openai_model,
-                                                                        messages=[{
-                                                                            "role":
-                                                                            "system",
-                                                                            "content":
-                                                                            system_prompt
-                                                                        }, {
-                                                                            "role":
-                                                                            "user",
-                                                                            "content":
-                                                                            question
-                                                                        }])
-
-            return response.choices[0].message.content.strip()
-
-        except (APIConnectionError, APITimeoutError) as e:
-            logger.error("Connection error calling OpenAI API: %s", e)
-            return f"Connection error analyzing code: {str(e)}"
-        except APIError as e:
-            logger.error("OpenAI API error: %s", e)
-            return f"Error analyzing code: {str(e)}"
-        except (KeyError, AttributeError) as e:
-            logger.error("API response format error: %s", e)
-            return f"API response format error: {str(e)}"
-
-    async def store_analysis_in_mongodb(self, analysis_data: Dict[str, Any]):
-        """
-        Store code analysis results in MongoDB
-        
-        Args:
-            analysis_data: Dictionary containing analysis results
-        """
-        analysis_data['last_updated'] = datetime.datetime.now(datetime.timezone.utc)
-
-        # Create a unique filter based on epic, issue, commit, file, and analysis type
-        filter_query = {
-            "epic_key": analysis_data["epic_key"],
-            "issue_key": analysis_data["issue_key"],
-            "commit_id": analysis_data["commit_id"],
-            "filename": analysis_data["filename"],
-            "analysis_type": analysis_data["analysis_type"]
-        }
-
-        # Upsert the analysis data
-        result = await self.code_analysis_collection.replace_one(filter_query,
-                                                                 analysis_data,
-                                                                 upsert=True)
-
-        action = "inserted" if result.upserted_id else "updated"
-        logger.debug("Analysis %s in code_analysis collection for %s:%s", action,
-                     analysis_data["issue_key"], analysis_data["filename"])
-
-    async def get_epic_data_by_issue(self, epic_key: str) -> List[Dict[str, Any]]:
-        """
-        Get all epic data grouped by JIRA issue (all commits and file changes per issue)
+        Get all epic data grouped by JIRA issue using a single aggregation to get issues and commits,
+        then fetch file changes separately for better performance.
         
         Args:
             epic_key: The epic ticket ID (e.g., "SERVER-12345")
             
         Returns:
-            List of documents with issue data and all related commits/file changes
+            List of documents with issue data and all related commits with file changes
         """
         logger.info("Fetching aggregated data by issue for epic %s", epic_key)
 
-        # MongoDB aggregation pipeline to group all changes by JIRA issue
+        # MongoDB aggregation pipeline to get issues and their commits (without file changes)
         pipeline = [
             # Stage 1: Match issues in the epic
             {
@@ -443,17 +179,7 @@ class CodeAnalyzer:
                 }
             },
 
-            # Stage 5: Lookup file changes for each commit
-            {
-                "$lookup": {
-                    "from": "file_changes",
-                    "localField": "commit_details.commit_id",
-                    "foreignField": "commit_id",
-                    "as": "file_changes"
-                }
-            },
-
-            # Stage 6: Group back by issue to collect all commits and file changes
+            # Stage 5: Group back by issue to collect all commits (without file changes)
             {
                 "$group": {
                     "_id": "$key",
@@ -476,8 +202,7 @@ class CodeAnalyzer:
                                     "commit_id": "$commit_details.commit_id",
                                     "message": "$commit_details.message",
                                     "author": "$commit_details.author",
-                                    "repository": "$commit_details.repository",
-                                    "file_changes": "$file_changes"
+                                    "repository": "$commit_details.repository"
                                 },
                                 "else": "$$REMOVE"
                             }
@@ -486,7 +211,7 @@ class CodeAnalyzer:
                 }
             },
 
-            # Stage 7: Filter out issues without commits
+            # Stage 6: Filter out issues without commits
             {
                 "$match": {
                     "commits": {
@@ -499,111 +224,158 @@ class CodeAnalyzer:
         cursor = self.jira_issues_collection.aggregate(pipeline)
         results = await cursor.to_list(length=None)
 
+        # Now fetch file changes separately for each commit
+        for issue_data in results:
+            commits = issue_data.get('commits', [])
+            for commit in commits:
+                commit_id = commit.get('commit_id')
+                if commit_id:
+                    # Fetch file changes for this commit
+                    file_changes = await self._get_file_changes_for_commit(commit_id)
+                    commit['file_changes'] = file_changes
+                else:
+                    commit['file_changes'] = []
+
         logger.info("Found %d issues with commits for epic %s", len(results), epic_key)
         return results
 
-    async def process_epic_analysis(self, epic_key: str) -> None:
+    def _generate_issue_analysis_questions(self, issue_data: Dict[str,
+                                                                  Any]) -> List[Dict[str, str]]:
         """
-        Main processing function: analyze all code changes in an epic by JIRA issue
+        Generate analysis questions for an entire JIRA issue (all commits and file changes)
         
         Args:
-            epic_key: The epic ticket ID to analyze
+            issue_data: Issue document with all commits and file changes
+            
+        Returns:
+            List of dictionaries with 'type' and 'question' keys
         """
-        logger.info("Starting issue-level analysis for epic %s", epic_key)
+        issue_key = issue_data.get('issue_key')
+        issue_summary = issue_data.get('issue_summary')
+        issue_description = issue_data.get('issue_description')
+        issue_commits = issue_data.get('commits', [])
 
-        # Get all data grouped by issue
-        epic_issues = await self.get_epic_data_by_issue(epic_key)
+        # Collect all changes across all commits
+        commit_diffs = []
 
-        total_analyses = 0
-        processed_issues = 0
-        errors = 0
+        for commit in issue_commits:
+            commit_id = commit.get('commit_id')
+            commit_author = commit.get('author')
+            commit_message = commit.get('message')
+            file_changes = commit.get('file_changes')
 
-        for issue_data in epic_issues:
-            issue_key = issue_data.get('issue_key')
+            all_file_changes = []
+            for file_change in file_changes:
+                filename = file_change.get('filename')
+                status = file_change.get('status')
+                patch = file_change.get('patch')
 
-            logger.info("Analyzing issue %s with %d commits", issue_key,
-                        len(issue_data.get('commits', [])))
+                all_file_changes.append(f"File: {filename}\nStatus: {status}\nPatch:\n{patch}\n")
 
-            # Generate analysis questions for the entire issue
-            questions = self._generate_issue_analysis_questions(issue_data)
+            single_commit = f"""
+                Commit ID: {commit_id}\n
+                Author: {commit_author}\n
+                Message: {commit_message}\n
+                Changes: {'\n'.join(all_file_changes)}\n{'-'*40}\n
+            """
 
-            for question_data in questions:
-                try:
-                    # Check if we already have this analysis
-                    existing = await self.code_analysis_collection.find_one({
-                        "epic_key":
-                        epic_key,
-                        "issue_key":
-                        issue_key,
-                        "analysis_type":
-                        question_data['type']
-                    })
+            commit_diffs.append(single_commit)
 
-                    if existing:
-                        logger.debug("Analysis already exists for %s (%s)", issue_key,
-                                     question_data['type'])
-                        continue
+        # Template variables for string formatting
+        template_vars = {
+            'issue_key':
+            issue_key,
+            'issue_summary':
+            issue_summary,
+            'issue_description':
+            issue_description,
+            'commit_diffs':
+            '\n'.join(commit_diffs) if len(commit_diffs) > 0 else 'No commit details available',
+        }
 
-                    # Get additional context from MCP server if configured
-                    # Use the first repository found in the commits
-                    repositories = set()
-                    for commit in issue_data.get('commits', []):
-                        repo = commit.get('repository', '')
-                        if repo:
-                            repositories.add(repo)
+        questions = []
 
-                    mcp_context = ""
-                    if repositories:
-                        first_repo = next(iter(repositories))
-                        mcp_context = await self.get_mcp_context(issue_key, first_repo)
+        analysis_questions_config = self.config.get('analysis_questions')
+        for question_key, question_config in analysis_questions_config.items():
+            questions.append({
+                'analysis_type': question_key,
+                'question': question_config['template'].format(**template_vars),
+            })
 
-                    # Enhance question with MCP context if available
-                    enhanced_question = question_data['question']
-                    if mcp_context:
-                        enhanced_question += f"\n\nAdditional Context from Codebase:\n{mcp_context}"
+        return questions
 
-                    # Get OpenAI analysis
-                    response = await self.analyze_with_openai(enhanced_question)
+    async def _analyze_with_openai(self, question: str) -> str:
+        """
+        Send a question to OpenAI and get the analysis response
+        
+        Args:
+            question: The analysis question to send to OpenAI
+            
+        Returns:
+            OpenAI's response text
+        """
+        logger.debug("Sending question to OpenAI (model: %s)", self.openai_model)
 
-                    # Prepare analysis document
-                    analysis_doc = {
-                        'epic_key': epic_key,
-                        'issue_key': issue_key,
-                        'analysis_type': question_data['type'],
-                        'question': question_data['question'],
-                        'response': response,
-                        'model_used': self.openai_model,
-                        'timestamp': datetime.datetime.now(datetime.timezone.utc),
-                        'issue_stats': {
-                            'commit_count':
-                            len(issue_data.get('commits', [])),
-                            'repositories':
-                            list(repositories),
-                            'total_file_changes':
-                            sum(
-                                len(commit.get('file_changes', []))
-                                for commit in issue_data.get('commits', []))
-                        }
-                    }
+        # Get OpenAI configuration
+        openai_config = self.config['openai']
+        system_prompt = openai_config['system_prompt']
 
-                    # Store in MongoDB
-                    await self.store_issue_analysis_in_mongodb(analysis_doc)
-                    total_analyses += 1
+        # Use the new OpenAI v2+ async client
+        response = await self.openai_client.chat.completions.create(model=self.openai_model,
+                                                                    messages=[{
+                                                                        "role":
+                                                                        "system",
+                                                                        "content":
+                                                                        system_prompt
+                                                                    }, {
+                                                                        "role": "user",
+                                                                        "content": question
+                                                                    }])
 
-                    logger.info("Completed %s analysis for issue %s", question_data['type'],
-                                issue_key)
+        lines = response.choices[0].message.content.strip().split('\n')
+        try:
+            classification = None
+            reasoning = None
 
-                except Exception as e:
-                    logger.error("Error analyzing issue %s (%s): %s", issue_key,
-                                 question_data['type'], e)
-                    errors += 1
+            for i, line in enumerate(lines):
+                line = line.strip()
 
-            processed_issues += 1
+                # Look for classification line
+                if line.lower().startswith('classification:'):
+                    classification = line.split(':', 1)[1].strip()
 
-        logger.info("Epic analysis complete: %d issues processed, %d total analyses, %d errors",
-                    processed_issues, total_analyses, errors)
+                # Look for reasoning line
+                elif line.lower().startswith('reasoning:'):
+                    # Get the reasoning part after the colon
+                    reasoning_start = line.split(':', 1)[1].strip()
 
-    async def store_issue_analysis_in_mongodb(self, analysis_data: Dict[str, Any]):
+                    # Collect remaining lines as part of reasoning
+                    reasoning_parts = [reasoning_start] if reasoning_start else []
+                    for j in range(i + 1, len(lines)):
+                        remaining_line = lines[j].strip()
+                        if remaining_line:
+                            reasoning_parts.append(remaining_line)
+
+                    reasoning = ' '.join(reasoning_parts)
+                    break
+
+            # Return parsed result if both parts found, otherwise return raw response
+            if classification and reasoning:
+                return {
+                    'classification': classification,
+                    'reasoning': reasoning,
+                    'raw_response': lines
+                }
+            else:
+                # If parsing failed, return the raw response in a structured format
+                logger.warning("Could not parse classification response, storing raw response")
+                return {'classification': None, 'reasoning': None, 'raw_response': lines}
+
+        except Exception as e:
+            logger.error("Error parsing classification response: %s", e)
+            return {'classification': None, 'reasoning': None, 'raw_response': lines}
+
+    async def _store_issue_analysis_in_mongodb(self, analysis_data: Dict[str, Any]):
         """
         Store issue-level code analysis results in MongoDB
         
@@ -627,6 +399,83 @@ class CodeAnalyzer:
         action = "inserted" if result.upserted_id else "updated"
         logger.debug("Analysis %s in code_analysis collection for issue %s", action,
                      analysis_data["issue_key"])
+
+    async def process_epic_analysis(self, epic_key: str) -> None:
+        """
+        Main processing function: analyze all code changes in an epic by JIRA issue
+        
+        Args:
+            epic_key: The epic ticket ID to analyze
+        """
+        logger.info("Starting issue-level analysis for epic %s", epic_key)
+
+        # Get all data grouped by issue
+        epic_issues = await self._get_epic_data_by_issue(epic_key)
+
+        total_analyses = 0
+        processed_issues = 0
+        errors = 0
+
+        for issue_data in epic_issues:
+            issue_key = issue_data.get('issue_key')
+
+            # Generate analysis questions for the entire issue
+            questions = self._generate_issue_analysis_questions(issue_data)
+
+            for question_data in questions:
+                try:
+                    # Check if we already have this analysis
+                    existing = await self.code_analysis_collection.find_one({
+                        "epic_key":
+                        epic_key,
+                        "issue_key":
+                        issue_key,
+                        "analysis_type":
+                        question_data['analysis_type']
+                    })
+
+                    if existing:
+                        logger.info("Skipping analysis for %s (%s)", issue_key,
+                                    question_data['analysis_type'])
+                        continue
+
+                    logger.info("Analyzing %s (%s)", issue_key, question_data['analysis_type'])
+
+                    # TODO: Enhance question with MCP context if available
+                    enhanced_question = question_data['question']
+
+                    # Get OpenAI analysis
+                    response = await self._analyze_with_openai(enhanced_question)
+
+                    # Prepare analysis document
+                    analysis_doc = {
+                        'epic_key': epic_key,
+                        'issue_key': issue_key,
+                        'analysis_type': question_data['analysis_type'],
+                        'question': enhanced_question,
+                        'classification': response['classification'],
+                        'reasoning': response['reasoning'],
+                        'raw_response': response['raw_response'],
+                        'model_used': self.openai_model,
+                        'timestamp': datetime.datetime.now(datetime.timezone.utc),
+                    }
+
+                    # Store in MongoDB
+                    await self._store_issue_analysis_in_mongodb(analysis_doc)
+                    total_analyses += 1
+
+                    logger.info("Completed %s analysis for issue %s",
+                                question_data['analysis_type'], issue_key)
+
+                except Exception as e:
+                    logger.error("Error analyzing issue %s (%s): %s", issue_key,
+                                 question_data['analysis_type'], e)
+                    errors += 1
+
+            processed_issues += 1
+
+        logger.info("Epic analysis complete: %d issues processed, %d total analyses, %d errors",
+                    processed_issues, total_analyses, errors)
 
     async def setup_database_indexes(self) -> None:
         """Set up database indexes for efficient querying on the code_analysis collection"""

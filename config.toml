@@ -1,14 +1,9 @@
-# Example configuration file for analyze_code_changes.py
-# Copy this to config.toml and customize as needed
-# Contains prompts, questions, and OpenAI API settings
-
 [openai]
-# System prompt for OpenAI API - customize this to change how the AI analyzes code
 system_prompt = """
 You are a Senior Software Engineer at MongoDB.
 You need to convince the company that it needs to invest some significant resources in improving
 the core server code quality in order to increase the development velocity for implementing
-horizontally scalable features. This includes revaming the APIs that the core server teams have at
+horizontally scalable features. This includes revamping the APIs that the core server teams have at
 their disposal for performing catalog changes, such as creating/dropping databases, collections and
 indexes; modifying catalog properties, such as collection types, collection visibility and in
 general, catching-up on technical debt that has accumulated over the years.
@@ -17,14 +12,14 @@ general, catching-up on technical debt that has accumulated over the years.
 [analysis_questions]
 # Questions to ask for each commit analysis
 
-[analysis_questions.categorize_commit]
-type = "issue_summary"
+[analysis_questions.categorize]
 template = """
 Given the following JIRA issue and its context, classify whether the code changes it performed are
 one of:
  - Catalog CRUD: Consumes the catalog as a reader only, but doesn't actually perform catalog changes
  - Catalog DDL: Consumes the catalog as a reader and writer, performs catalog changes
  - Catalog API Change: Changes the code of the catalog APIs
+ - Something else: Doesn't meet any of the criteria above
 Provide 2-3 sentences justification.
 
 **JIRA issue**
@@ -60,7 +55,7 @@ An issue is "Catalog API Change" if:
  - Modifies catalog cache interfaces (CatalogCache, ShardServerCatalogCacheLoader)
 
 **Output Format:**  
-Classification: [Catalog CRUD | Catalog DDL | Catalog API Change]
+Classification: [Catalog CRUD | Catalog DDL | Catalog API Change | Something else]
 
-Justification: [2-3 sentences explaining why, citing specific files, functions, or patterns from the diff]
+Reasoning: [2-3 sentences explaining why, citing specific files, functions, or patterns from the diff]
 """
