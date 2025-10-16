@@ -1,0 +1,60 @@
+[
+    {
+        "$match": {
+            "epic": "EPIC_KEY_PLACEHOLDER"
+        }
+    },
+    {
+        "$unwind": {
+            "path": "$development.commits"
+        }
+    },
+    {
+        "$lookup": {
+            "from": "commits",
+            "localField": "development.commits.id",
+            "foreignField": "commit_id",
+            "as": "commit_details"
+        }
+    },
+    {
+        "$unwind": {
+            "path": "$commit_details",
+            "preserveNullAndEmptyArrays": true
+        }
+    },
+    {
+        "$group": {
+            "_id": {
+                "epic_key": "$epic",
+                "issue_key": "$issue"
+            },
+            "issue_summary": {
+                "$first": "$summary"
+            },
+            "issue_description": {
+                "$first": "$description"
+            },
+            "commits": {
+                "$push": {
+                    "id": "$development.commits.id",
+                    "detail": {
+                        "message": "$commit_details.message",
+                        "author": "$commit_details.author",
+                        "repository": "$commit_details.repository"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "$project": {
+            "_id": 0,
+            "epic_key": "$_id.epic_key",
+            "issue_key": "$_id.issue_key",
+            "issue_summary": 1,
+            "issue_description": 1,
+            "commits": 1
+        }
+    }
+]

@@ -44,6 +44,7 @@ import logging
 import argparse
 import asyncio
 import datetime
+import json
 from typing import Dict, Any, List
 from pathlib import Path
 
@@ -131,7 +132,31 @@ class CodeAnalyzer:
         logger.debug("Found %d file changes for commit %s", len(file_changes), commit_id[:8])
         return file_changes
 
-    async def _get_epic_data_by_issue(self, epic_key: str) -> List[Dict[str, Any]]:
+    def _load_aggregation_pipeline(self, pipeline_file: str) -> List[Dict[str, Any]]:
+        """
+        Load MongoDB aggregation pipeline from JSON file
+
+        Args:
+            pipeline_file: Path to the JSON file containing the aggregation pipeline
+
+        Returns:
+            List of aggregation stages
+        """
+        pipeline_path = Path(pipeline_file)
+        if not pipeline_path.is_absolute():
+            pipeline_path = Path(__file__).parent / pipeline_file
+
+        try:
+            with open(pipeline_path, 'r', encoding='utf-8') as f:
+                pipeline = json.load(f)
+            logger.debug("Loaded aggregation pipeline from %s", pipeline_path)
+            return pipeline
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error("Error loading aggregation pipeline from %s: %s", pipeline_path, e)
+            raise ValueError(
+                f"Could not load aggregation pipeline from {pipeline_path}: {e}") from e
+
+    async def _get_epic_data_by_issue(self, epic_key: str):
         """
         Get all epic data grouped by JIRA issue using a single aggregation to get issues and commits,
         then fetch file changes separately for better performance.
@@ -144,102 +169,18 @@ class CodeAnalyzer:
         """
         logger.info("Fetching aggregated data by issue for epic %s", epic_key)
 
-        # MongoDB aggregation pipeline to get issues and their commits (without file changes)
-        pipeline = [
-            # Stage 1: Match issues in the epic
-            {
-                "$match": {
-                    "epic": epic_key
-                }
-            },
+        # Load MongoDB aggregation pipeline from JSON file
+        pipeline = self._load_aggregation_pipeline("analyze_code_changes_aggregation.json")
 
-            # Stage 2: Unwind development.commits array to process each commit separately
-            {
-                "$unwind": {
-                    "path": "$development.commits",
-                    "preserveNullAndEmptyArrays": True
-                }
-            },
+        # Replace the placeholder with the actual epic key
+        pipeline[0]["$match"]["epic"] = epic_key
 
-            # Stage 3: Lookup commits using development.commits.id as foreign key
-            {
-                "$lookup": {
-                    "from": "commits",
-                    "localField": "development.commits.id",
-                    "foreignField": "commit_id",
-                    "as": "commit_details"
-                }
-            },
-
-            # Stage 4: Unwind commit details
-            {
-                "$unwind": {
-                    "path": "$commit_details",
-                    "preserveNullAndEmptyArrays": True
-                }
-            },
-
-            # Stage 5: Group back by issue to collect all commits (without file changes)
-            {
-                "$group": {
-                    "_id": "$key",
-                    "epic_key": {
-                        "$first": "$epic"
-                    },
-                    "issue_key": {
-                        "$first": "$key"
-                    },
-                    "issue_summary": {
-                        "$first": "$summary"
-                    },
-                    "issue_description": {
-                        "$first": "$description"
-                    },
-                    "commits": {
-                        "$push": {
-                            "$cond": {
-                                "if": {
-                                    "$ne": ["$commit_details", None]
-                                },
-                                "then": {
-                                    "commit_id": "$commit_details.commit_id",
-                                    "message": "$commit_details.message",
-                                    "author": "$commit_details.author",
-                                    "repository": "$commit_details.repository"
-                                },
-                                "else": "$$REMOVE"
-                            }
-                        }
-                    }
-                }
-            },
-
-            # Stage 6: Filter out issues without commits
-            {
-                "$match": {
-                    "commits": {
-                        "$ne": []
-                    }
-                }
-            }
-        ]
-
-        cursor = self.jira_issues_collection.aggregate(pipeline)
-        results = await cursor.to_list(length=None)
-
-        # Now fetch file changes separately for each commit
-        for issue_data in results:
-            commits = issue_data.get('commits', [])
+        async for issue_data in self.jira_issues_collection.aggregate(pipeline):
+            commits = issue_data['commits']
             for commit in commits:
-                commit_id = commit.get('commit_id')
-                if commit_id:
-                    file_changes = await self._get_file_changes_for_commit(commit_id)
-                    commit['file_changes'] = file_changes
-                else:
-                    commit['file_changes'] = []
+                commit['file_changes'] = await self._get_file_changes_for_commit(commit['id'])
 
-        logger.info("Found %d issues with commits", len(results))
-        return results
+            yield issue_data
 
     def _generate_issue_analysis_questions(self, issue_data: Dict[str,
                                                                   Any]) -> List[Dict[str, str]]:
@@ -252,26 +193,34 @@ class CodeAnalyzer:
         Returns:
             List of dictionaries with 'type' and 'question' keys
         """
-        issue_key = issue_data.get('issue_key')
-        issue_summary = issue_data.get('issue_summary')
-        issue_description = issue_data.get('issue_description')
-        issue_commits = issue_data.get('commits', [])
+        issue_epic = issue_data['epic_key']
+        issue_key = issue_data['issue_key']
+        issue_summary = issue_data['issue_summary']
+        issue_description = issue_data['issue_description']
+        issue_commits = issue_data['commits']
 
         # Collect all changes across all commits
         commit_ids = []
         commit_diffs = []
 
         for commit in issue_commits:
-            commit_id = commit.get('commit_id')
-            commit_author = commit.get('author')
-            commit_message = commit.get('message')
-            file_changes = commit.get('file_changes')
+            commit_id = commit['id']
+            commit_detail = commit['detail']
+            if not commit_detail:
+                logging.info("Skipping commit %s from (%s, %s) with missing details", commit_id,
+                             issue_epic, issue_key)
+                continue
+
+            commit_author = commit_detail['author']
+            commit_message = commit_detail['message']
+
+            file_changes = commit['file_changes']
 
             all_file_changes = []
             for file_change in file_changes:
-                filename = file_change.get('filename')
-                status = file_change.get('status')
-                patch = file_change.get('patch')
+                filename = file_change['filename']
+                status = file_change['status']
+                patch = file_change['patch']
 
                 all_file_changes.append(f"File: {filename}\nStatus: {status}\nPatch:\n{patch}\n")
 
@@ -424,14 +373,11 @@ class CodeAnalyzer:
         """
         logger.info("Starting issue-level analysis for epic %s", epic_key)
 
-        # Get all data grouped by issue
-        epic_issues = await self._get_epic_data_by_issue(epic_key)
-
         total_analyses = 0
         processed_issues = 0
         errors = 0
 
-        for issue_data in epic_issues:
+        async for issue_data in self._get_epic_data_by_issue(epic_key):
             issue_epic = issue_data['epic_key']
             issue_key = issue_data['issue_key']
 
@@ -479,7 +425,7 @@ class CodeAnalyzer:
                         'reasoning': response['reasoning'],
                         'raw_response': response['raw_response'],
                         'model_used': self.openai_model,
-                        'usage_stats': response.get('usage_stats'),
+                        'usage_stats': response['usage_stats'],
                         'timestamp': datetime.datetime.now(datetime.timezone.utc),
                     }
 
