@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-fetch_code_changes - A tool for fetching code changes from local Git repositories based on git
-commits stored in MongoDB by fetch_jira_epic.py.
+fetch_code_changes - Tool for fetching code changes from local Git repositories based on git
+                     commits stored in MongoDB by fetch_jira_epic.py.
 
 Usage:
     python fetch_code_changes.py
@@ -159,11 +159,11 @@ class GitCodeFetcher:
     def _is_commit_on_master_branch(self, repo_obj: Repo, commit_id: str) -> bool:
         """
         Check if a commit is on the master/main branch and not a cherry-pick.
-        
+
         Args:
             repo_obj: Git repository object
             commit_id: The commit ID to check
-            
+
         Returns:
             True if commit is on master/main branch and not a cherry-pick
         """

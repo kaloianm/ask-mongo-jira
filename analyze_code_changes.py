@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-analyze_code_changes - A tool for analyzing code changes using OpenAI API based on commits and file
-changes stored in MongoDB by fetch_jira_epic.py and fetch_code_changes.py.
+analyze_code_changes - Tool for analyzing code changes using OpenAI API based on commits and file
+                       changes stored in MongoDB by fetch_jira_epic.py and fetch_code_changes.py.
 
 Usage:
     python analyze_code_changes.py EPIC-123
@@ -117,10 +117,10 @@ class CodeAnalyzer:
     async def _get_file_changes_for_commit(self, commit_id: str) -> List[Dict[str, Any]]:
         """
         Get all file changes for a specific commit
-        
+
         Args:
             commit_id: The git commit SHA
-            
+
         Returns:
             List of file change documents from MongoDB
         """
@@ -160,10 +160,10 @@ class CodeAnalyzer:
         """
         Get all epic data grouped by JIRA issue using a single aggregation to get issues and commits,
         then fetch file changes separately for better performance.
-        
+
         Args:
-            epic_key: The epic ticket ID (e.g., "SERVER-12345")
-            
+            epic_key: The epic ticket ID (e.g., "SPM-12345")
+
         Returns:
             List of documents with issue data and all related commits with file changes
         """
@@ -186,10 +186,10 @@ class CodeAnalyzer:
                                                                   Any]) -> List[Dict[str, str]]:
         """
         Generate analysis questions for an entire JIRA issue (all commits and file changes)
-        
+
         Args:
             issue_data: Issue document with all commits and file changes
-            
+
         Returns:
             List of dictionaries with 'type' and 'question' keys
         """
@@ -262,10 +262,10 @@ class CodeAnalyzer:
     async def _analyze_with_openai(self, question: str) -> str:
         """
         Send a question to OpenAI and get the analysis response
-        
+
         Args:
             question: The analysis question to send to OpenAI
-            
+
         Returns:
             OpenAI's response text
         """

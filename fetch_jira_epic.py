@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-fetch_jira_epic - A simple tool for fetching all issues in a Jira epic from the "Core Server"
-project, including development information, and storing them in MongoDB.
+fetch_jira_epic - Tool for fetching all issues in a Jira epic and their development information,
+                  and storing them in MongoDB.
 
 Usage:
     python fetch_jira_epic.py EPIC-123 --mongodb-url mongodb://localhost:27017
