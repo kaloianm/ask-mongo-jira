@@ -374,6 +374,11 @@ class JiraIssueFetcher:
                                                        unique=True,
                                                        name="epic_issue_unique")
 
+        # Create a unique index on the issue field
+        await self.jira_issues_collection.create_index([("issue", 1)],
+                                                       unique=True,
+                                                       name="issue_unique")
+
         logger.info("Database indexes created successfully")
 
     async def close_mongodb_connection(self) -> None:
