@@ -56,7 +56,6 @@ class JiraIssueFetcher:
         """
         Initialize with configuration parameters
         """
-
         self.jira_url = jira_url
         self.jira_token = jira_token
         self.mongodb_url = mongodb_url
@@ -72,7 +71,7 @@ class JiraIssueFetcher:
         self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
 
         self.db = self.mongodb_client["ask-mongo-jira"]
-        self.collection = self.db["jira_issues"]
+        self.jira_issues_collection = self.db["jira_issues"]
 
     def _is_allowed_repository(self, url: str) -> bool:
         """
@@ -98,7 +97,6 @@ class JiraIssueFetcher:
         """
         Get development information using Jira's REST API directly
         """
-
         dev_info = {'commits': [], 'branches': [], 'pull_requests': []}
 
         # Get the internal issue ID (numeric) instead of the issue key
@@ -201,7 +199,6 @@ class JiraIssueFetcher:
         """
         Extract development information (commits, branches, PRs) from a Jira issue
         """
-
         dev_info = {'commits': [], 'branches': [], 'pull_requests': []}
 
         # Try to get development information using the REST API. This requires the issue to be
@@ -273,11 +270,10 @@ class JiraIssueFetcher:
 
         return dev_info if any(dev_info.values()) else None
 
-    def get_epic_issues(self, epic_key: str):
+    async def get_epic_issues(self, epic_key: str):
         """
         Get all issues from Core Server project that belong to a specific epic - returns an iterator
         """
-
         # JQL to find all issues in Core Server project that belong to the epic
         jql = f'project = "Core Server" AND "Epic Link" = {epic_key}'
         logger.info("Searching for issues in epic %s using JQL: %s", epic_key, jql)
@@ -291,11 +287,21 @@ class JiraIssueFetcher:
 
         # Yield each issue with full details (similar to get_jira_ticket)
         for issue in issues:
+            existing = await self.jira_issues_collection.find_one({
+                "epic": epic_key,
+                "issue": issue.key
+            })
+
+            if existing:
+                logger.info("Issue %s (%s) already exists in MongoDB, skipping", epic_key,
+                            issue.key)
+                continue
+
             # Get detailed issue information (reusing logic from get_jira_ticket)
             issue_data = {
                 'epic':
                 epic_key,
-                'key':
+                'issue':
                 issue.key,
                 'summary':
                 issue.fields.summary,
@@ -326,7 +332,6 @@ class JiraIssueFetcher:
         """
         Store issues in MongoDB database using batch upsert operations
         """
-
         logger.info("Batch upserting %d issues in MongoDB", len(issues))
 
         if not issues:
@@ -343,15 +348,15 @@ class JiraIssueFetcher:
             # Add last_updated timestamp
             issue["last_updated"] = current_time
 
-            # Create filter for unique identification (epic + key)
-            filter_query = {"epic": issue["epic"], "key": issue["key"]}
+            # Create filter for unique identification (epic + issue)
+            filter_query = {"epic": issue["epic"], "issue": issue["issue"]}
 
             # Create ReplaceOne operation with upsert=True
             operation = ReplaceOne(filter_query, issue, upsert=True)
             bulk_operations.append(operation)
 
         # Execute all operations in a single batch
-        result = await self.collection.bulk_write(bulk_operations, ordered=False)
+        result = await self.jira_issues_collection.bulk_write(bulk_operations, ordered=False)
 
         # Log the results
         inserted_count = result.upserted_count
@@ -364,14 +369,10 @@ class JiraIssueFetcher:
         """
         Set up database indexes for efficient querying
         """
-
-        if not self.mongodb_client:
-            return
-
-        # Create a compound index on epic and key for uniqueness and efficient queries
-        await self.collection.create_index([("epic", 1), ("key", 1)],
-                                           unique=True,
-                                           name="epic_key_unique")
+        # Create a compound index on epic and issue for uniqueness and efficient queries
+        await self.jira_issues_collection.create_index([("epic", 1), ("issue", 1)],
+                                                       unique=True,
+                                                       name="epic_issue_unique")
 
         logger.info("Database indexes created successfully")
 
@@ -379,7 +380,6 @@ class JiraIssueFetcher:
         """
         Close MongoDB connection
         """
-
         if self.mongodb_client:
             self.mongodb_client.close()
             logger.info("MongoDB connection closed")
@@ -389,7 +389,6 @@ async def main():
     """
     Main function
     """
-
     parser = argparse.ArgumentParser(description="Query Jira tickets and store in MongoDB")
     parser.add_argument("epic", help="Epic ticket ID to get all Core Server issues in that epic")
     parser.add_argument("--log-level",
@@ -423,7 +422,7 @@ async def main():
 
         # Collect all issues from the iterator
         issues = []
-        for issue in tool.get_epic_issues(args.epic):
+        async for issue in tool.get_epic_issues(args.epic):
             issues.append(issue)
 
         # Store in MongoDB instead of printing
@@ -432,7 +431,6 @@ async def main():
         logger.info("Successfully processed %d issues for epic %s", len(issues), args.epic)
 
     finally:
-        # Clean up MongoDB connection
         await tool.close_mongodb_connection()
 
 
