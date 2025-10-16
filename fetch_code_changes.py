@@ -202,7 +202,7 @@ class GitCodeFetcher:
 
         return True
 
-    async def fetch_commit_details(self, owner: str, repo: str, commit_id: str) -> Optional[tuple]:
+    async def _fetch_commit_details(self, owner: str, repo: str, commit_id: str) -> Optional[tuple]:
         """
         Fetch detailed commit information from local Git repository.
         
@@ -238,14 +238,16 @@ class GitCodeFetcher:
             if commit.parents:
                 # Compare with first parent, including 100 lines of context before and after changes
                 diff = commit.parents[0].diff(commit, create_patch=True, unified=100)
+                short_diff = commit.parents[0].diff(commit, create_patch=True)
             else:
                 # Initial commit - compare with empty tree, including 100 lines of context
                 diff = commit.diff(git.NULL_TREE, create_patch=True, unified=100)
+                short_diff = commit.diff(git.NULL_TREE, create_patch=True)
 
             # Extract file changes
             files_changed = []
 
-            for diff_item in diff:
+            for diff_item, short_diff_item in zip(diff, short_diff):
                 # Determine change type
                 if diff_item.new_file:
                     status = 'added'
@@ -263,6 +265,8 @@ class GitCodeFetcher:
                 # Count line changes from diff
                 patch_text = diff_item.diff.decode('utf-8',
                                                    errors='ignore') if diff_item.diff else ""
+                short_patch_text = short_diff_item.diff.decode(
+                    'utf-8', errors='ignore') if short_diff_item.diff else ""
                 additions = patch_text.count('\n+') - patch_text.count('\n+++')
                 deletions = patch_text.count('\n-') - patch_text.count('\n---')
 
@@ -277,6 +281,7 @@ class GitCodeFetcher:
                     'deletions': deletions,
                     'changes': additions + deletions,
                     'patch': patch_text if patch_text else None,
+                    'short_patch': short_patch_text if short_patch_text else None
                 }
 
                 if previous_filename:
@@ -320,7 +325,8 @@ class GitCodeFetcher:
             logger.error("Git command error fetching commit %s: %s", commit_id, e)
             return None
 
-    async def store_commit_in_mongodb(self, commit_data: Dict[str, Any], jira_issues: List[str]):
+    async def _store_commit_in_mongodb(self, commit_data: Dict[str, Any], jira_issues: List[str],
+                                       scan_version: int):
         """
         Store or update a commit in the commits collection.
         Args:
@@ -328,6 +334,7 @@ class GitCodeFetcher:
             jira_issues: List of JIRA issue keys that reference this commit
         """
         commit_data['jira_issues'] = jira_issues
+        commit_data['version'] = scan_version
         commit_data['last_updated'] = datetime.datetime.now(datetime.timezone.utc)
 
         # Use commit_id as the unique identifier
@@ -339,8 +346,9 @@ class GitCodeFetcher:
         action = "inserted" if result.upserted_id else "updated"
         logger.debug("Commit %s %s in commits collection", commit_data["commit_id"][:8], action)
 
-    async def store_file_changes_in_mongodb(self, commit_id: str, repository: str,
-                                            files_changed: List[Dict[str, Any]]):
+    async def _store_file_changes_in_mongodb(self, commit_id: str, repository: str,
+                                             files_changed: List[Dict[str,
+                                                                      Any]], scan_version: int):
         """
         Store file changes in the file_changes collection.
         Args:
@@ -362,6 +370,7 @@ class GitCodeFetcher:
             doc = {
                 'commit_id': commit_id,
                 'repository': repository,
+                'version': scan_version,
                 'last_updated': current_time,
                 **file_change  # Include all file change fields
             }
@@ -373,7 +382,7 @@ class GitCodeFetcher:
             logger.debug("Inserted %d file changes for commit %s", len(result.inserted_ids),
                          commit_id[:8])
 
-    async def process_jira_issues(self) -> None:
+    async def process_jira_issues(self, scan_version: int) -> None:
         """
         Main processing function: iterate through JIRA issues and fetch commit details from local
         Git repositories.
@@ -412,7 +421,7 @@ class GitCodeFetcher:
                 existing = await self.commits_collection.find_one({"commit_id": commit_id})
                 if existing:
                     # Update the existing commit to include this JIRA issue if not already present
-                    if issue_key not in existing.get('jira_issues', []):
+                    if issue_key not in existing['jira_issues']:
                         await self.commits_collection.update_one({"commit_id": commit_id}, {
                             "$addToSet": {
                                 "jira_issues": issue_key
@@ -424,20 +433,24 @@ class GitCodeFetcher:
                         logger.debug("Added issue %s to existing commit %s", issue_key,
                                      commit_id[:8])
                     else:
-                        logger.debug("Commit %s already has issue %s, skipping", commit_id[:8],
+                        logger.debug("Commit %s already includes issue %s", commit_id[:8],
                                      issue_key)
-                    skipped_commits += 1
-                    continue
+
+                    # Skip processing if the existing commit entry is already at the current scan
+                    # version
+                    if ('version' in existing) and existing['version'] == scan_version:
+                        skipped_commits += 1
+                        continue
 
                 # Fetch detailed commit information from local Git repository
-                commit_result = await self.fetch_commit_details(owner, repo, commit_id)
+                commit_result = await self._fetch_commit_details(owner, repo, commit_id)
 
                 if commit_result:
                     commit_data, files_changed = commit_result
                     # Store commit data and file changes in separate collections
-                    await self.store_commit_in_mongodb(commit_data, [issue_key])
-                    await self.store_file_changes_in_mongodb(commit_id, f"{owner}/{repo}",
-                                                             files_changed)
+                    await self._store_commit_in_mongodb(commit_data, [issue_key], scan_version)
+                    await self._store_file_changes_in_mongodb(commit_id, f"{owner}/{repo}",
+                                                              files_changed, scan_version)
                     processed_commits += 1
                     logger.info("Successfully processed commit %s for issue %s", commit_id[:8],
                                 issue_key)
@@ -520,7 +533,7 @@ async def main():
 
         # Process JIRA issues and their commits
         logger.info("Starting to fetch code changes from local Git repositories...")
-        await fetcher.process_jira_issues()
+        await fetcher.process_jira_issues(scan_version=1)
         logger.info("Code change fetching completed successfully")
 
     finally:
