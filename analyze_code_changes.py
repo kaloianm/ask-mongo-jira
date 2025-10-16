@@ -573,7 +573,6 @@ async def main():
         logger.info("Code analysis completed successfully")
 
     finally:
-        # Clean up MongoDB connection
         await analyzer.close_mongodb_connection()
 
 

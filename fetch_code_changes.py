@@ -227,6 +227,10 @@ class GitCodeFetcher:
                 logger.warning("Commit %s not found in repository %s/%s: %s", commit_id, owner,
                                repo, e)
                 return None
+            except ValueError as e:
+                logger.warning("Invalid commit ID %s in repository %s/%s: %s", commit_id, owner,
+                               repo, e)
+                return None
 
             # Check if commit is on master branch and not a cherry-pick
             if not self._is_commit_on_master_branch(repo_obj, commit_id):
@@ -382,6 +386,33 @@ class GitCodeFetcher:
             logger.debug("Inserted %d file changes for commit %s", len(result.inserted_ids),
                          commit_id[:8])
 
+    async def _mark_jira_issue_fetched_in_mongodb(self, epic_key: str, issue_key: str,
+                                                  scan_version: str):
+        """
+        Mark a JIRA issue as fetched by updating it with a fetch_version field.
+
+        Args:
+            epic_key: The epic ticket ID
+            issue_key: The JIRA issue key
+            scan_version: The scan version to mark this issue with
+        """
+        filter_query = {"epic": epic_key, "issue": issue_key}
+        update_query = {
+            "$set": {
+                "fetch_version": scan_version,
+                "fetch_timestamp": datetime.datetime.now(datetime.timezone.utc)
+            }
+        }
+
+        result = await self.jira_issues_collection.update_one(filter_query, update_query)
+
+        if result.matched_count > 0:
+            logger.debug("Marked issue %s in epic %s as fetched with version %s", issue_key,
+                         epic_key, scan_version)
+        else:
+            logger.warning("Could not find issue %s in epic %s to mark as fetched", issue_key,
+                           epic_key)
+
     async def process_jira_issues(self, scan_version: int) -> None:
         """
         Main processing function: iterate through JIRA issues and fetch commit details from local
@@ -401,7 +432,8 @@ class GitCodeFetcher:
 
         async for issue in cursor:
             issue_count += 1
-            issue_key = issue.get('key', 'unknown')
+            epic_key = issue['epic']
+            issue_key = issue['issue']
             dev_info = issue.get('development', {})
             commits = dev_info.get('commits', [])
 
@@ -456,6 +488,9 @@ class GitCodeFetcher:
                                 issue_key)
                 else:
                     errors += 1
+
+                # Mark the JIRA issue as fetched
+                await self._mark_jira_issue_fetched_in_mongodb(epic_key, issue_key, scan_version)
 
         logger.info(
             "Processing complete: %d issues processed, %d commits processed, %d skipped, %d errors",
@@ -537,7 +572,6 @@ async def main():
         logger.info("Code change fetching completed successfully")
 
     finally:
-        # Clean up MongoDB connection
         await fetcher.close_mongodb_connection()
 
 
