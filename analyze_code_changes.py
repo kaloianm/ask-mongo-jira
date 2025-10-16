@@ -338,48 +338,56 @@ class CodeAnalyzer:
                                                                         "content": question
                                                                     }])
 
+        usage = response.usage
+        usage_stats = {
+            'prompt_tokens': usage.prompt_tokens,
+            'completion_tokens': usage.completion_tokens,
+            'total_tokens': usage.total_tokens
+        }
+
         lines = response.choices[0].message.content.strip().split('\n')
-        try:
-            classification = None
-            reasoning = None
+        classification = None
+        reasoning = None
 
-            for i, line in enumerate(lines):
-                line = line.strip()
+        for i, line in enumerate(lines):
+            line = line.strip()
 
-                # Look for classification line
-                if line.lower().startswith('classification:'):
-                    classification = line.split(':', 1)[1].strip()
+            # Look for classification line
+            if line.lower().startswith('classification:'):
+                classification = line.split(':', 1)[1].strip()
 
-                # Look for reasoning line
-                elif line.lower().startswith('reasoning:'):
-                    # Get the reasoning part after the colon
-                    reasoning_start = line.split(':', 1)[1].strip()
+            # Look for reasoning line
+            elif line.lower().startswith('reasoning:'):
+                # Get the reasoning part after the colon
+                reasoning_start = line.split(':', 1)[1].strip()
 
-                    # Collect remaining lines as part of reasoning
-                    reasoning_parts = [reasoning_start] if reasoning_start else []
-                    for j in range(i + 1, len(lines)):
-                        remaining_line = lines[j].strip()
-                        if remaining_line:
-                            reasoning_parts.append(remaining_line)
+                # Collect remaining lines as part of reasoning
+                reasoning_parts = [reasoning_start] if reasoning_start else []
+                for j in range(i + 1, len(lines)):
+                    remaining_line = lines[j].strip()
+                    if remaining_line:
+                        reasoning_parts.append(remaining_line)
 
-                    reasoning = ' '.join(reasoning_parts)
-                    break
+                reasoning = ' '.join(reasoning_parts)
+                break
 
-            # Return parsed result if both parts found, otherwise return raw response
-            if classification and reasoning:
-                return {
-                    'classification': classification,
-                    'reasoning': reasoning,
-                    'raw_response': lines
-                }
-            else:
-                # If parsing failed, return the raw response in a structured format
-                logger.warning("Could not parse classification response, storing raw response")
-                return {'classification': None, 'reasoning': None, 'raw_response': lines}
-
-        except Exception as e:
-            logger.error("Error parsing classification response: %s", e)
-            return {'classification': None, 'reasoning': None, 'raw_response': lines}
+        # Return parsed result if both parts found, otherwise return raw response
+        if classification and reasoning:
+            return {
+                'classification': classification,
+                'reasoning': reasoning,
+                'raw_response': lines,
+                'usage_stats': usage_stats
+            }
+        else:
+            # If parsing failed, return the raw response in a structured format
+            logger.warning("Could not parse classification response, storing raw response only")
+            return {
+                'classification': None,
+                'reasoning': None,
+                'raw_response': lines,
+                'usage_stats': usage_stats
+            }
 
     async def _store_issue_analysis_in_mongodb(self, analysis_data: Dict[str, Any]):
         """
@@ -471,6 +479,7 @@ class CodeAnalyzer:
                         'reasoning': response['reasoning'],
                         'raw_response': response['raw_response'],
                         'model_used': self.openai_model,
+                        'usage_stats': response.get('usage_stats'),
                         'timestamp': datetime.datetime.now(datetime.timezone.utc),
                     }
 
