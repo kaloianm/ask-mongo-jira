@@ -54,6 +54,9 @@ from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 import tomli
 
+# Local imports
+from aggregations import load_aggregation_pipeline
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -132,30 +135,6 @@ class CodeAnalyzer:
         logger.debug("Found %d file changes for commit %s", len(file_changes), commit_id[:8])
         return file_changes
 
-    def _load_aggregation_pipeline(self, pipeline_file: str) -> List[Dict[str, Any]]:
-        """
-        Load MongoDB aggregation pipeline from JSON file
-
-        Args:
-            pipeline_file: Path to the JSON file containing the aggregation pipeline
-
-        Returns:
-            List of aggregation stages
-        """
-        pipeline_path = Path(pipeline_file)
-        if not pipeline_path.is_absolute():
-            pipeline_path = Path(__file__).parent / pipeline_file
-
-        try:
-            with open(pipeline_path, 'r', encoding='utf-8') as f:
-                pipeline = json.load(f)
-            logger.debug("Loaded aggregation pipeline from %s", pipeline_path)
-            return pipeline
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            logger.error("Error loading aggregation pipeline from %s: %s", pipeline_path, e)
-            raise ValueError(
-                f"Could not load aggregation pipeline from {pipeline_path}: {e}") from e
-
     async def _get_epic_data_by_issue(self, epic_key: str):
         """
         Get all epic data grouped by JIRA issue using a single aggregation to get issues and commits,
@@ -170,7 +149,7 @@ class CodeAnalyzer:
         logger.info("Fetching aggregated data by issue for epic %s", epic_key)
 
         # Load MongoDB aggregation pipeline from JSON file
-        pipeline = self._load_aggregation_pipeline("analyze_code_changes_aggregation.json")
+        pipeline = load_aggregation_pipeline("analyze_code_changes_aggregation.json")
 
         # Replace the placeholder with the actual epic key
         pipeline[0]["$match"]["epic"] = epic_key
@@ -431,10 +410,10 @@ class CodeAnalyzer:
 
                     # Store in MongoDB
                     await self._store_issue_analysis_in_mongodb(analysis_doc)
-                    total_analyses += 1
 
                     logger.info("Completed %s analysis for issue %s",
                                 question_data['analysis_type'], issue_key)
+                    total_analyses += 1
 
                 except Exception as e:
                     logger.error("Error analyzing issue %s (%s): %s", issue_key,
