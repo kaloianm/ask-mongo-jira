@@ -240,12 +240,12 @@ class GitCodeFetcher:
 
             # Get the diff for this commit with extended context using Git's unified context option
             if commit.parents:
-                # Compare with first parent, including 100 lines of context before and after changes
-                diff = commit.parents[0].diff(commit, create_patch=True, unified=100)
+                # Compare with first parent, including 50 lines of context before and after changes
+                diff = commit.parents[0].diff(commit, create_patch=True, unified=50)
                 short_diff = commit.parents[0].diff(commit, create_patch=True)
             else:
-                # Initial commit - compare with empty tree, including 100 lines of context
-                diff = commit.diff(git.NULL_TREE, create_patch=True, unified=100)
+                # Initial commit - compare with empty tree, including 50 lines of context
+                diff = commit.diff(git.NULL_TREE, create_patch=True, unified=50)
                 short_diff = commit.diff(git.NULL_TREE, create_patch=True)
 
             # Extract file changes
