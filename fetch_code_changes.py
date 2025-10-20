@@ -57,8 +57,8 @@ class GitCodeFetcher:
         Initialize with configuration parameters
         """
         # Store configuration
-        self.mongodb_url = mongodb_url
         self.git_repos_path = git_repos_path
+        self.git_repos_cache = {}
 
         # Log configuration
         logger.info("Initializing GitCodeFetcher with configuration:")
@@ -66,14 +66,11 @@ class GitCodeFetcher:
         logger.info("  git_repos_path: %s", self.git_repos_path)
 
         # Initialize MongoDB client
-        self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
+        self.mongodb_client = AsyncIOMotorClient(mongodb_url)
         self.db = self.mongodb_client["ask-mongo-jira"]
         self.jira_issues_collection = self.db["jira_issues"]
         self.commits_collection = self.db["commits"]
         self.file_changes_collection = self.db["file_changes"]
-
-        # Cache for opened repositories
-        self.repo_cache = {}
 
     def _extract_owner_repo(self, commit_url):
         """
@@ -118,8 +115,8 @@ class GitCodeFetcher:
             Git Repo object or None if not found
         """
         repository_name = f"{owner}/{repo}"
-        if repository_name in self.repo_cache:
-            return self.repo_cache[repository_name]
+        if repository_name in self.git_repos_cache:
+            return self.git_repos_cache[repository_name]
 
         repo_path = self._get_repo_path(owner, repo)
         if not repo_path:
@@ -127,7 +124,7 @@ class GitCodeFetcher:
 
         try:
             repo_obj = Repo(str(repo_path))
-            self.repo_cache[repository_name] = repo_obj
+            self.git_repos_cache[repository_name] = repo_obj
             logger.debug("Opened repository: %s", repo_path)
             return repo_obj
         except InvalidGitRepositoryError:
@@ -148,8 +145,8 @@ class GitCodeFetcher:
         # Get the commit object
         commit = repo_obj.commit(commit_id)
 
-        # Check if commit is reachable from master or main branch
-        master_branches = ['master', 'main']
+        # Check if commit is reachable from master branch
+        master_branches = ['master']
         is_on_master = False
 
         for branch_name in master_branches:
@@ -212,8 +209,10 @@ class GitCodeFetcher:
 
             # Check if commit is on master branch and not a cherry-pick
             if not self._is_commit_on_master_branch(repo_obj, commit_id):
-                logger.info("Skipping commit %s as it's not on master branch or is a cherry-pick",
-                            commit_id[:8])
+                logger.info(
+                    "Skipping commit %s: %s ... as it's not on master branch or is a cherry-pick",
+                    commit_id[:8],
+                    commit.message.splitlines()[0][:24])
                 return None
 
             # Get the diff for this commit with extended context using Git's unified context option
@@ -412,18 +411,18 @@ class GitCodeFetcher:
             issue_count += 1
             epic_key = issue['epic']
             issue_key = issue['issue']
-            dev_info = issue.get('development', {})
-            commits = dev_info.get('commits', [])
+            dev_info = issue['development']
+            commits = dev_info['commits']
 
-            logger.info("Processing issue %s with %d commits", issue_key, len(commits))
+            logger.info("Processing issue %s/%s with %d commits", epic_key, issue_key, len(commits))
 
             for commit in commits:
-                commit_id = commit.get('id')
+                commit_id = commit['id']
                 if not commit_id:
                     logger.warning("Skipping commit with no ID in issue %s", issue_key)
                     continue
 
-                owner, repo = self._extract_owner_repo(commit.get('url'))
+                owner, repo = self._extract_owner_repo(commit['url'])
                 logger.debug("Processing commit %s from %s/%s (issue: %s)", commit_id[:8], owner,
                              repo, issue_key)
 
@@ -467,7 +466,7 @@ class GitCodeFetcher:
                 else:
                     errors += 1
 
-                # Mark the JIRA issue as fetched
+                # Mark the JIRA issue as fetched in the jira_issues collection
                 await self._mark_jira_issue_fetched_in_mongodb(epic_key, issue_key, scan_version)
 
         logger.info(

@@ -80,7 +80,6 @@ class TokenRefreshHTTPClient(httpx.AsyncClient):
         """
         super().__init__(**kwargs)
         self.openai_api_key_refresh_command = openai_api_key_refresh_command
-        self.max_retries = 1
 
         self._current_token = None
         self._refresh_lock = asyncio.Lock()
@@ -124,8 +123,8 @@ class TokenRefreshHTTPClient(httpx.AsyncClient):
         # First attempt
         response = await super().send(request, **kwargs)
 
-        # If we get a 401 and have retries left, try to refresh token
-        if response.status_code == 401 and self.max_retries > 0:
+        # If we get a 401, try to refresh token
+        if response.status_code == 401:
             logger.warning("Received 401 Unauthorized, attempting token refresh")
 
             try:
@@ -146,7 +145,7 @@ class TokenRefreshHTTPClient(httpx.AsyncClient):
 
             except Exception as e:
                 logger.error("Token refresh failed: %s", e)
-                # Return the original 401 response if refresh fails
+                # Pass-through to return the original 401 response if refresh fails
 
         return response
 
@@ -185,15 +184,6 @@ class CodeAnalyzer:
         logger.info("  openai_base_url: %s", self.openai_base_url)
         logger.info("  openai_model: %s", self.openai_model)
 
-        # Create custom HTTP client with token refresh
-        if openai_api_key:
-            self.openai_client = AsyncOpenAI(api_key=self.openai_api_key,
-                                             base_url=self.openai_base_url)
-        elif openai_api_key_refresh_command:
-            self.openai_client = AsyncOpenAI(
-                base_url=self.openai_base_url,
-                http_client=TokenRefreshHTTPClient(openai_api_key_refresh_command))
-
         # Initialize MongoDB client
         self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
         self.db = self.mongodb_client["ask-mongo-jira"]
@@ -201,6 +191,19 @@ class CodeAnalyzer:
         self.commits_collection = self.db["commits"]
         self.file_changes_collection = self.db["file_changes"]
         self.code_analysis_collection = self.db["code_analysis"]
+
+        # Initialize OpenAI client
+        if openai_api_key:
+            self.openai_client = AsyncOpenAI(
+                base_url=self.openai_base_url,
+                api_key=self.openai_api_key,
+            )
+        elif openai_api_key_refresh_command:
+            self.openai_client = AsyncOpenAI(
+                base_url=self.openai_base_url,
+                api_key="TO BE FILLED LATER",
+                http_client=TokenRefreshHTTPClient(openai_api_key_refresh_command),
+            )
 
     async def _get_file_changes_for_commit(self, commit_id: str) -> List[Dict[str, Any]]:
         """
@@ -271,8 +274,8 @@ class CodeAnalyzer:
             commit_id = commit['id']
             commit_detail = commit['detail']
             if not commit_detail:
-                logging.info("Skipping commit %s from (%s, %s) with missing details", commit_id,
-                             issue_epic, issue_key)
+                logging.debug("Skipping commit %s from (%s, %s) with missing details", commit_id,
+                              issue_epic, issue_key)
                 continue
 
             commit_author = commit_detail['author']

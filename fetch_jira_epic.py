@@ -52,13 +52,14 @@ class JiraIssueFetcher:
     Main class for querying Jira
     """
 
-    def __init__(self, jira_url: str, jira_token: str, mongodb_url):
+    def __init__(self, mongodb_url: str, jira_url: str, jira_token: str):
         """
         Initialize with configuration parameters
         """
+        # Store configuration
+        self.mongodb_url = mongodb_url
         self.jira_url = jira_url
         self.jira_token = jira_token
-        self.mongodb_url = mongodb_url
 
         # Log configuration (mask sensitive tokens)
         logger.info("Initializing JiraIssueFetcher with configuration:")
@@ -407,16 +408,16 @@ async def main():
     setup_logging(args.log_level)
 
     # Extract configuration from environment variables
+    mongodb_url = os.getenv('MONGODB_URL')
     jira_url = os.getenv('JIRA_URL')
     jira_token = os.getenv('JIRA_API_TOKEN')
-    mongodb_url = os.getenv('MONGODB_URL')
 
     if not mongodb_url:
         logger.error("MongoDB URL is required. Set the MONGODB_URL environment variable")
         return
 
     # Initialize the tool with configuration
-    tool = JiraIssueFetcher(jira_url=jira_url, jira_token=jira_token, mongodb_url=mongodb_url)
+    tool = JiraIssueFetcher(mongodb_url=mongodb_url, jira_url=jira_url, jira_token=jira_token)
 
     try:
         # Set up database indexes
