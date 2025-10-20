@@ -233,6 +233,7 @@ class CodeAnalyzer:
             questions.append({
                 'analysis_type': question_key,
                 'analysis_version': question_config['version'],
+                'model_used': self.openai_model,
                 'question': question_config['template'].format(**template_vars),
             })
 
@@ -375,6 +376,8 @@ class CodeAnalyzer:
                         question_data['analysis_type'],
                         "analysis_version":
                         question_data['analysis_version'],
+                        "model_used":
+                        question_data['model_used'],
                     })
 
                     if existing:
