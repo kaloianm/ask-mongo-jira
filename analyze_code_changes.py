@@ -44,7 +44,7 @@ import logging
 import argparse
 import asyncio
 import datetime
-import json
+import subprocess
 from typing import Dict, Any, List
 from pathlib import Path
 
@@ -53,6 +53,7 @@ from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 import tomli
+import httpx
 
 # Local imports
 from aggregations import load_aggregation_pipeline
@@ -84,12 +85,104 @@ def load_config(config_path: str = "config.toml") -> Dict[str, Any]:
         raise ValueError(f"Could not load configuration from {config_path}: {e}") from e
 
 
+class TokenRefreshHTTPClient(httpx.AsyncClient):
+    """
+    Custom HTTP client that handles automatic token refresh on 401 Unauthorized errors
+    """
+
+    def __init__(self, **kwargs):
+        """
+        Initialize the HTTP client with token refresh capability
+        """
+        super().__init__(**kwargs)
+        self.current_token = None
+        self.max_retries = 1
+        self._refresh_lock = asyncio.Lock()
+
+    async def refresh_token(self):
+        """
+        Refresh the API token
+        """
+        async with self._refresh_lock:
+            try:
+                logger.info("Refreshing OpenAI API token")
+                process = subprocess.run(
+                    '$HOME/.local/bin/kanopy-oidc login',
+                    shell=True,
+                    check=False,
+                    capture_output=True,
+                )
+                self.current_token = process.stdout.decode().strip()
+                logger.info("OpenAI API token refreshed successfully")
+            except Exception as e:
+                logger.error("Failed to refresh OpenAI API token: %s", e)
+                raise
+
+    async def send(self, request: httpx.Request, **kwargs) -> httpx.Response:
+        """
+        Override send method to handle token refresh on 401 errors
+
+        Args:
+            request: HTTP request to send
+            **kwargs: Additional arguments
+
+        Returns:
+            HTTP response
+        """
+        # Update Authorization header with current token
+        if "Authorization" in request.headers:
+            if not self.current_token:
+                await self.refresh_token()
+            request.headers["Authorization"] = f"Bearer {self.current_token}"
+
+        # First attempt
+        response = await super().send(request, **kwargs)
+
+        # If we get a 401 and have retries left, try to refresh token
+        if response.status_code == 401 and self.max_retries > 0:
+            logger.warning("Received 401 Unauthorized, attempting token refresh")
+
+            try:
+                # Refresh the token
+                await self.refresh_token()
+
+                # Update the request with new token
+                request.headers["Authorization"] = f"Bearer {self.current_token}"
+
+                # Retry the request
+                logger.info("Retrying request with refreshed token")
+                response = await super().send(request, **kwargs)
+
+                if response.status_code == 401:
+                    logger.error("Still received 401 after token refresh")
+                else:
+                    logger.info("Request succeeded after token refresh")
+
+            except Exception as e:
+                logger.error("Token refresh failed: %s", e)
+                # Return the original 401 response if refresh fails
+
+        return response
+
+
 class CodeAnalyzer:
-    """Main class for analyzing code changes using OpenAI API"""
+    """
+    Main class for analyzing code changes using OpenAI API
+    """
 
     def __init__(self, mongodb_url: str, openai_api_key: str, openai_base_url: str,
                  openai_model: str, mcp_server_url: str, config: Dict[str, Any]):
-        """Initialize with configuration parameters"""
+        """
+        Initialize with configuration parameters
+
+        Args:
+            mongodb_url: MongoDB connection URL
+            openai_api_key: OpenAI API key
+            openai_base_url: OpenAI API base URL
+            openai_model: OpenAI model to use
+            mcp_server_url: MCP Server URL
+            config: Configuration dictionary
+        """
         # Store configuration
         self.mongodb_url = mongodb_url
         self.openai_api_key = openai_api_key
@@ -106,8 +199,10 @@ class CodeAnalyzer:
         logger.info("  openai_model: %s", self.openai_model)
         logger.info("  mcp_server_url: %s", self.mcp_server_url)
 
-        # Initialize OpenAI client
-        self.openai_client = AsyncOpenAI(api_key=self.openai_api_key, base_url=self.openai_base_url)
+        # Create custom HTTP client with token refresh
+        self.openai_client = AsyncOpenAI(api_key=self.openai_api_key,
+                                         base_url=self.openai_base_url,
+                                         http_client=TokenRefreshHTTPClient())
 
         # Initialize MongoDB client
         self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
@@ -161,8 +256,8 @@ class CodeAnalyzer:
 
             yield issue_data
 
-    def _generate_issue_analysis_questions(self, issue_data: Dict[str,
-                                                                  Any]) -> List[Dict[str, str]]:
+    def _generate_issue_analysis_questions(self, issue_data: Dict[str, Any],
+                                           model_to_use: str) -> List[Dict[str, str]]:
         """
         Generate analysis questions for an entire JIRA issue (all commits and file changes)
 
@@ -203,11 +298,13 @@ class CodeAnalyzer:
 
                 all_file_changes.append(f"File: {filename}\nStatus: {status}\nPatch:\n{patch}\n")
 
+            changes_text = '\n'.join(all_file_changes)
+            separator = '-' * 40
             single_commit = f"""
                 Commit ID: {commit_id}\n
                 Author: {commit_author}\n
                 Message: {commit_message}\n
-                Changes: {'\n'.join(all_file_changes)}\n{'-'*40}\n
+                Changes: {changes_text}\n{separator}\n
             """
 
             commit_ids.append(commit_id)
@@ -233,7 +330,7 @@ class CodeAnalyzer:
             questions.append({
                 'analysis_type': question_key,
                 'analysis_version': question_config['version'],
-                'model_used': self.openai_model,
+                'model_used': model_to_use,
                 'question': question_config['template'].format(**template_vars),
             })
 
@@ -333,6 +430,7 @@ class CodeAnalyzer:
             "issue_key": analysis_data["issue_key"],
             "analysis_type": analysis_data["analysis_type"],
             "analysis_version": analysis_data["analysis_version"],
+            "model_used": analysis_data["model_used"],
         }
 
         # Upsert the analysis data
@@ -362,7 +460,7 @@ class CodeAnalyzer:
             issue_key = issue_data['issue_key']
 
             # Generate analysis questions for the entire issue
-            questions = self._generate_issue_analysis_questions(issue_data)
+            questions = self._generate_issue_analysis_questions(issue_data, self.openai_model)
 
             for question_data in questions['questions']:
                 try:
@@ -381,13 +479,14 @@ class CodeAnalyzer:
                     })
 
                     if existing:
-                        logger.info("Skipping analysis for %s (%s/%s)", issue_key,
+                        logger.info("Skipping analysis for %s (%s/%s/%s)", issue_key,
                                     question_data['analysis_type'],
-                                    question_data['analysis_version'])
+                                    question_data['analysis_version'], question_data['model_used'])
                         continue
 
-                    logger.info("Analyzing %s (%s/%s)", issue_key, question_data['analysis_type'],
-                                question_data['analysis_version'])
+                    logger.info("Analyzing %s (%s/%s/%s)", issue_key,
+                                question_data['analysis_type'], question_data['analysis_version'],
+                                question_data['model_used'])
 
                     # TODO: Enhance question with MCP context if available
                     enhanced_question = question_data['question']
@@ -399,14 +498,14 @@ class CodeAnalyzer:
                     analysis_doc = {
                         'epic_key': issue_epic,
                         'issue_key': issue_key,
-                        'commit_ids': questions['commit_ids'],
                         'analysis_type': question_data['analysis_type'],
                         'analysis_version': question_data['analysis_version'],
-                        'question': enhanced_question,
+                        'model_used': self.openai_model,
+                        'commit_ids': questions['commit_ids'],
                         'classification': response['classification'],
                         'reasoning': response['reasoning'],
+                        'question': enhanced_question,
                         'raw_response': response['raw_response'],
-                        'model_used': self.openai_model,
                         'usage_stats': response['usage_stats'],
                         'timestamp': datetime.datetime.now(datetime.timezone.utc),
                     }
@@ -414,8 +513,9 @@ class CodeAnalyzer:
                     # Store in MongoDB
                     await self._store_issue_analysis_in_mongodb(analysis_doc)
 
-                    logger.info("Completed %s analysis for issue %s",
-                                question_data['analysis_type'], issue_key)
+                    logger.info("Completed analysis for issue %s (%s/%s/%s)",
+                                analysis_doc['issue_key'], analysis_doc['analysis_type'],
+                                analysis_doc['analysis_version'], analysis_doc['model_used'])
                     total_analyses += 1
 
                 except Exception as e:
