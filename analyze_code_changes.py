@@ -4,14 +4,10 @@ analyze_code_changes - Tool for analyzing code changes using OpenAI API based on
                        changes stored in MongoDB by fetch_jira_epic.py and fetch_code_changes.py.
 
 Usage:
-    python analyze_code_changes.py EPIC-123
+    python analyze_code_changes.py --help
 
 Environment Variables:
     MONGODB_URL - MongoDB connection URL (required)
-    OPENAI_API_KEY - OpenAI API key (required)
-    OPENAI_BASE_URL - OpenAI API base URL (optional, defaults to https://api.openai.com/v1)
-    OPENAI_MODEL - OpenAI model to use (optional, defaults to gpt-4)
-    MCP_SERVER_URL - MCP Server URL (optional, for enhanced code analysis with additional context)
 
 The script will:
 1. Query the "ask-mongo-jira" database using aggregation to join
@@ -25,18 +21,6 @@ The aggregation approach reduces database round-trips and provides better perfor
 - Related commits referenced in the development.commits field of each issue
 - File changes for each commit
 All in a single MongoDB aggregation pipeline.
-
-The code_analysis collection will contain documents with:
-- epic_key: The epic ticket ID
-- issue_key: The JIRA issue key
-- analysis_type: Type of analysis performed (e.g., "issue_summary", "issue_potential_issues",
-  "issue_impact_assessment")
-- question: The question sent to OpenAI
-- response: OpenAI's analysis response
-- model_used: The OpenAI model used for analysis
-- timestamp: When the analysis was performed
-- last_updated: When this record was last updated
-- issue_stats: Statistics about the issue (commit count, repositories, file changes count)
 """
 
 import os
@@ -90,13 +74,15 @@ class TokenRefreshHTTPClient(httpx.AsyncClient):
     Custom HTTP client that handles automatic token refresh on 401 Unauthorized errors
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, openai_api_key_refresh_command, **kwargs):
         """
         Initialize the HTTP client with token refresh capability
         """
         super().__init__(**kwargs)
-        self.current_token = None
+        self.openai_api_key_refresh_command = openai_api_key_refresh_command
         self.max_retries = 1
+
+        self._current_token = None
         self._refresh_lock = asyncio.Lock()
 
     async def refresh_token(self):
@@ -107,12 +93,12 @@ class TokenRefreshHTTPClient(httpx.AsyncClient):
             try:
                 logger.info("Refreshing OpenAI API token")
                 process = subprocess.run(
-                    '$HOME/.local/bin/kanopy-oidc login',
+                    self.openai_api_key_refresh_command,
                     shell=True,
                     check=False,
                     capture_output=True,
                 )
-                self.current_token = process.stdout.decode().strip()
+                self._current_token = process.stdout.decode().strip()
                 logger.info("OpenAI API token refreshed successfully")
             except Exception as e:
                 logger.error("Failed to refresh OpenAI API token: %s", e)
@@ -131,9 +117,9 @@ class TokenRefreshHTTPClient(httpx.AsyncClient):
         """
         # Update Authorization header with current token
         if "Authorization" in request.headers:
-            if not self.current_token:
+            if not self._current_token:
                 await self.refresh_token()
-            request.headers["Authorization"] = f"Bearer {self.current_token}"
+            request.headers["Authorization"] = f"Bearer {self._current_token}"
 
         # First attempt
         response = await super().send(request, **kwargs)
@@ -147,7 +133,7 @@ class TokenRefreshHTTPClient(httpx.AsyncClient):
                 await self.refresh_token()
 
                 # Update the request with new token
-                request.headers["Authorization"] = f"Bearer {self.current_token}"
+                request.headers["Authorization"] = f"Bearer {self._current_token}"
 
                 # Retry the request
                 logger.info("Retrying request with refreshed token")
@@ -170,39 +156,43 @@ class CodeAnalyzer:
     Main class for analyzing code changes using OpenAI API
     """
 
-    def __init__(self, mongodb_url: str, openai_api_key: str, openai_base_url: str,
-                 openai_model: str, mcp_server_url: str, config: Dict[str, Any]):
+    def __init__(self, mongodb_url: str, openai_api_key: str, openai_api_key_refresh_command: str,
+                 openai_base_url: str, openai_model: str, config: Dict[str, Any]):
         """
         Initialize with configuration parameters
 
         Args:
             mongodb_url: MongoDB connection URL
             openai_api_key: OpenAI API key
+            openai_api_key_refresh_command: Command to refresh OpenAI API key
             openai_base_url: OpenAI API base URL
             openai_model: OpenAI model to use
-            mcp_server_url: MCP Server URL
             config: Configuration dictionary
         """
         # Store configuration
         self.mongodb_url = mongodb_url
         self.openai_api_key = openai_api_key
+        self.openai_api_key_refresh_command = openai_api_key_refresh_command
         self.openai_base_url = openai_base_url
         self.openai_model = openai_model
-        self.mcp_server_url = mcp_server_url
         self.config = config
 
         # Log configuration
         logger.info("Initializing CodeAnalyzer with configuration:")
         logger.info("  mongodb_url: %s", "***" if mongodb_url else None)
         logger.info("  openai_api_key: %s", "***" if openai_api_key else None)
+        logger.info("  openai_api_key_refresh_command: %s", openai_api_key_refresh_command)
         logger.info("  openai_base_url: %s", self.openai_base_url)
         logger.info("  openai_model: %s", self.openai_model)
-        logger.info("  mcp_server_url: %s", self.mcp_server_url)
 
         # Create custom HTTP client with token refresh
-        self.openai_client = AsyncOpenAI(api_key=self.openai_api_key,
-                                         base_url=self.openai_base_url,
-                                         http_client=TokenRefreshHTTPClient())
+        if openai_api_key:
+            self.openai_client = AsyncOpenAI(api_key=self.openai_api_key,
+                                             base_url=self.openai_base_url)
+        elif openai_api_key_refresh_command:
+            self.openai_client = AsyncOpenAI(
+                base_url=self.openai_base_url,
+                http_client=TokenRefreshHTTPClient(openai_api_key_refresh_command))
 
         # Initialize MongoDB client
         self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
@@ -488,11 +478,8 @@ class CodeAnalyzer:
                                 question_data['analysis_type'], question_data['analysis_version'],
                                 question_data['model_used'])
 
-                    # TODO: Enhance question with MCP context if available
-                    enhanced_question = question_data['question']
-
                     # Get OpenAI analysis
-                    response = await self._analyze_with_openai(enhanced_question)
+                    response = await self._analyze_with_openai(question_data['question'])
 
                     # Prepare analysis document
                     analysis_doc = {
@@ -504,7 +491,7 @@ class CodeAnalyzer:
                         'commit_ids': questions['commit_ids'],
                         'classification': response['classification'],
                         'reasoning': response['reasoning'],
-                        'question': enhanced_question,
+                        'question': question_data['question'],
                         'raw_response': response['raw_response'],
                         'usage_stats': response['usage_stats'],
                         'timestamp': datetime.datetime.now(datetime.timezone.utc),
@@ -555,24 +542,38 @@ async def main():
                         default='INFO',
                         help="Set the logging level")
 
+    # OpenAI configuration parameters
+    parser.add_argument("--openai-base-url",
+                        required=True,
+                        help="OpenAI API base URL (e.g., https://api.openai.com/v1)")
+    parser.add_argument("--openai-api-key", help="OpenAI API key for authentication")
+    parser.add_argument("--openai-api-key-refresh-command",
+                        help="Command to refresh OpenAI API key (alternative to --openai-api-key)")
+    parser.add_argument("--openai-model", required=True, help="OpenAI model to use (e.g., gpt-4)")
+
     args = parser.parse_args()
+
+    # Validate that exactly one of the API key options is provided
+    if not args.openai_api_key and not args.openai_api_key_refresh_command:
+        parser.error("Either --openai-api-key or --openai-api-key-refresh-command must be provided")
+
+    if args.openai_api_key and args.openai_api_key_refresh_command:
+        parser.error(
+            "Only one of --openai-api-key or --openai-api-key-refresh-command can be provided, not both"
+        )
 
     # Setup logging
     setup_logging(args.log_level)
 
-    # Extract configuration from environment variables and arguments
+    # Extract configuration from environment variables and command line arguments
     mongodb_url = os.getenv('MONGODB_URL')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
-    openai_base_url = os.getenv('OPENAI_BASE_URL')
-    openai_model = os.getenv('OPENAI_MODEL')
-    mcp_server_url = os.getenv('MCP_SERVER_URL')
+    openai_base_url = args.openai_base_url
+    openai_api_key = args.openai_api_key
+    openai_api_key_refresh_command = args.openai_api_key_refresh_command
+    openai_model = args.openai_model
 
     if not mongodb_url:
         logger.error("MongoDB URL is required. Set the MONGODB_URL environment variable")
-        return
-
-    if not openai_api_key:
-        logger.error("OpenAI API key is required. Set the OPENAI_API_KEY environment variable")
         return
 
     # Load configuration
@@ -586,9 +587,9 @@ async def main():
     # Initialize the analyzer
     analyzer = CodeAnalyzer(mongodb_url=mongodb_url,
                             openai_api_key=openai_api_key,
+                            openai_api_key_refresh_command=openai_api_key_refresh_command,
                             openai_base_url=openai_base_url,
                             openai_model=openai_model,
-                            mcp_server_url=mcp_server_url,
                             config=config)
 
     try:

@@ -4,15 +4,15 @@ fetch_jira_epic - Tool for fetching all issues in a Jira epic and their developm
                   and storing them in MongoDB.
 
 Usage:
-    python fetch_jira_epic.py EPIC-123 --mongodb-url mongodb://localhost:27017
+    python fetch_jira_epic.py --help
 
 Environment Variables:
-    JIRA_URL - Jira server URL
-    JIRA_API_TOKEN - Jira API token
-    MONGODB_URL - MongoDB connection URL (can be overridden with --mongodb-url)
+    MONGODB_URL - MongoDB connection URL (required)
+    JIRA_URL - Jira server URL (required)
+    JIRA_API_TOKEN - Jira API token (required)
 
-The script will store all fetched issues as documents in the "ask-mongo-jira" database
-in the "jira_issues" collection.
+The script will store all fetched issues as documents in the "ask-mongo-jira" database, in the
+"jira_issues" collection.
 """
 
 import os

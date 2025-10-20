@@ -4,7 +4,7 @@ fetch_code_changes - Tool for fetching code changes from local Git repositories 
                      commits stored in MongoDB by fetch_jira_epic.py.
 
 Usage:
-    python fetch_code_changes.py
+    python fetch_code_changes.py --help
 
 Environment Variables:
     MONGODB_URL - MongoDB connection URL (required)
@@ -14,28 +14,6 @@ The script will:
 1. Query the "ask-mongo-jira" database's "jira_issues" collection for git commits
 2. For each unique commit, fetch the code changes from local Git repositories using GitPython
 3. Store the results in two collections: "commits" and "file_changes"
-
-The commits collection will contain documents with:
-- commit_id: The git commit SHA
-- repository: The repository name
-- author: Commit author information
-- message: Commit message
-- timestamp: Commit timestamp
-- stats: Commit statistics (additions, deletions, total changes)
-- jira_issues: List of JIRA issue keys that reference this commit
-- last_updated: When this record was last updated
-
-The file_changes collection will contain documents with:
-- commit_id: The git commit SHA (indexed)
-- repository: The repository name
-- filename: The path of the changed file
-- status: Change type (added, removed, renamed, modified)
-- additions: Number of lines added
-- deletions: Number of lines deleted
-- changes: Total number of changes (additions + deletions)
-- patch: The actual diff/patch text
-- previous_filename: Previous filename (for renamed files)
-- last_updated: When this record was last updated
 """
 
 import os
