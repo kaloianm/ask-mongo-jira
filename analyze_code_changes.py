@@ -23,11 +23,11 @@ The aggregation approach reduces database round-trips and provides better perfor
 All in a single MongoDB aggregation pipeline.
 """
 
-import os
-import logging
 import argparse
 import asyncio
 import datetime
+import logging
+import os
 import subprocess
 from typing import Dict, Any, List
 from pathlib import Path
@@ -249,8 +249,8 @@ class CodeAnalyzer:
 
             yield issue_data
 
-    def _generate_issue_analysis_questions(self, issue_data: Dict[str, Any],
-                                           model_to_use: str) -> List[Dict[str, str]]:
+    def _generate_issue_analysis_question(self, issue_data: Dict[str, Any], model_to_use: str,
+                                          question_key: str) -> List[Dict[str, str]]:
         """
         Generate analysis questions for an entire JIRA issue (all commits and file changes)
 
@@ -315,19 +315,55 @@ class CodeAnalyzer:
             '\n'.join(commit_diffs) if len(commit_diffs) > 0 else 'No commit details available',
         }
 
-        questions = []
-
         analysis_questions_config = self.config['analysis_questions']
+        question_config = analysis_questions_config[question_key]
+        return {
+            'analysis_type':
+            question_key,
+            'analysis_version':
+            question_config['version'],
+            'model_used':
+            model_to_use,
+            'question':
+            question_config['prompt'] + '\n' + question_config['template'].format(**template_vars),
+            'commit_ids':
+            commit_ids
+        }
 
-        for question_key, question_config in analysis_questions_config.items():
-            questions.append({
-                'analysis_type': question_key,
-                'analysis_version': question_config['version'],
-                'model_used': model_to_use,
-                'question': question_config['template'].format(**template_vars),
-            })
+    def _extract_classification_and_reasoning(self, response_text: str):
+        """
+        Extract classification and reasoning from OpenAI response text
+        """
+        lines = response_text.split('\n')
+        classification = None
+        reasoning = None
 
-        return {'questions': questions, 'commit_ids': commit_ids}
+        for i, line in enumerate(lines):
+            line = line.strip().replace('**', '')
+            line_lower = line.lower()
+
+            # Look for classification line
+            if line_lower.startswith('classification:'):
+                classification = line.split(':', 1)[1].strip()
+
+            # Look for reasoning line
+            if line_lower.startswith('reasoning:'):
+                # Get the reasoning part after the colon
+                reasoning_start = line.split(':', 1)[1].strip()
+
+                # Collect remaining lines as part of reasoning
+                reasoning_parts = [reasoning_start] if reasoning_start else []
+                for j in range(i + 1, len(lines)):
+                    remaining_line = lines[j].strip()
+                    if remaining_line:
+                        reasoning_parts.append(remaining_line)
+
+                reasoning = ' '.join(reasoning_parts)
+
+            if (classification and reasoning):
+                break
+
+        return classification, reasoning
 
     async def _analyze_with_openai(self, question: str) -> str:
         """
@@ -345,7 +381,6 @@ class CodeAnalyzer:
         openai_config = self.config['openai']
         system_prompt = openai_config['system_prompt']
 
-        # Use the new OpenAI v2+ async client
         response = await self.openai_client.chat.completions.create(model=self.openai_model,
                                                                     messages=[{
                                                                         "role":
@@ -364,38 +399,15 @@ class CodeAnalyzer:
             'total_tokens': usage.total_tokens
         }
 
-        lines = response.choices[0].message.content.strip().split('\n')
-        classification = None
-        reasoning = None
-
-        for i, line in enumerate(lines):
-            line = line.strip()
-
-            # Look for classification line
-            if line.lower().startswith('classification:'):
-                classification = line.split(':', 1)[1].strip()
-
-            # Look for reasoning line
-            elif line.lower().startswith('reasoning:'):
-                # Get the reasoning part after the colon
-                reasoning_start = line.split(':', 1)[1].strip()
-
-                # Collect remaining lines as part of reasoning
-                reasoning_parts = [reasoning_start] if reasoning_start else []
-                for j in range(i + 1, len(lines)):
-                    remaining_line = lines[j].strip()
-                    if remaining_line:
-                        reasoning_parts.append(remaining_line)
-
-                reasoning = ' '.join(reasoning_parts)
-                break
+        response_text = response.choices[0].message.content.strip()
+        classification, reasoning = self._extract_classification_and_reasoning(response_text)
 
         # Return parsed result if both parts found, otherwise return raw response
         if classification and reasoning:
             return {
                 'classification': classification,
                 'reasoning': reasoning,
-                'raw_response': lines,
+                'raw_response': response_text,
                 'usage_stats': usage_stats
             }
         else:
@@ -404,7 +416,7 @@ class CodeAnalyzer:
             return {
                 'classification': None,
                 'reasoning': None,
-                'raw_response': lines,
+                'raw_response': response_text,
                 'usage_stats': usage_stats
             }
 
@@ -435,15 +447,13 @@ class CodeAnalyzer:
         logger.debug("Analysis %s in code_analysis collection for issue %s", action,
                      analysis_data["issue_key"])
 
-    async def process_epic(self, epic_key: str) -> None:
+    async def process_epic(self, epic_key: str, question_key: str) -> None:
         """
         Main processing function: analyze all code changes in an epic by JIRA issue
         
         Args:
             epic_key: The epic ticket ID to analyze
         """
-        logger.info("Starting issue-level analysis for epic %s", epic_key)
-
         total_analyses = 0
         processed_issues = 0
         errors = 0
@@ -453,65 +463,63 @@ class CodeAnalyzer:
             issue_key = issue_data['issue_key']
 
             # Generate analysis questions for the entire issue
-            questions = self._generate_issue_analysis_questions(issue_data, self.openai_model)
+            question_data = self._generate_issue_analysis_question(issue_data, self.openai_model,
+                                                                   question_key)
+            try:
+                # Check if we already have this analysis
+                existing = await self.code_analysis_collection.find_one({
+                    "epic_key":
+                    issue_epic,
+                    "issue_key":
+                    issue_key,
+                    "analysis_type":
+                    question_data['analysis_type'],
+                    "analysis_version":
+                    question_data['analysis_version'],
+                    "model_used":
+                    question_data['model_used'],
+                })
 
-            for question_data in questions['questions']:
-                try:
-                    # Check if we already have this analysis
-                    existing = await self.code_analysis_collection.find_one({
-                        "epic_key":
-                        issue_epic,
-                        "issue_key":
-                        issue_key,
-                        "analysis_type":
-                        question_data['analysis_type'],
-                        "analysis_version":
-                        question_data['analysis_version'],
-                        "model_used":
-                        question_data['model_used'],
-                    })
-
-                    if existing:
-                        logger.info("Skipping analysis for %s (%s/%s/%s)", issue_key,
-                                    question_data['analysis_type'],
-                                    question_data['analysis_version'], question_data['model_used'])
-                        continue
-
-                    logger.info("Analyzing %s (%s/%s/%s)", issue_key,
+                if existing:
+                    logger.info("Skipping analysis for %s (%s/%s/%s)", issue_key,
                                 question_data['analysis_type'], question_data['analysis_version'],
                                 question_data['model_used'])
+                    continue
 
-                    # Get OpenAI analysis
-                    response = await self._analyze_with_openai(question_data['question'])
+                logger.info("Analyzing %s (%s/%s/%s)", issue_key, question_data['analysis_type'],
+                            question_data['analysis_version'], question_data['model_used'])
 
-                    # Prepare analysis document
-                    analysis_doc = {
-                        'epic_key': issue_epic,
-                        'issue_key': issue_key,
-                        'analysis_type': question_data['analysis_type'],
-                        'analysis_version': question_data['analysis_version'],
-                        'model_used': self.openai_model,
-                        'commit_ids': questions['commit_ids'],
-                        'classification': response['classification'],
-                        'reasoning': response['reasoning'],
-                        'question': question_data['question'],
-                        'raw_response': response['raw_response'],
-                        'usage_stats': response['usage_stats'],
-                        'timestamp': datetime.datetime.now(datetime.timezone.utc),
-                    }
+                # Get OpenAI analysis
+                response = await self._analyze_with_openai(question_data['question'])
 
-                    # Store in MongoDB
-                    await self._store_issue_analysis_in_mongodb(analysis_doc)
+                # Prepare analysis document
+                analysis_doc = {
+                    'epic_key': issue_epic,
+                    'issue_key': issue_key,
+                    'analysis_type': question_data['analysis_type'],
+                    'analysis_version': question_data['analysis_version'],
+                    'model_used': self.openai_model,
+                    'commit_ids': question_data['commit_ids'],
+                    'classification': response['classification'],
+                    'reasoning': response['reasoning'],
+                    'question': question_data['question'],
+                    'raw_response': response['raw_response'],
+                    'usage_stats': response['usage_stats'],
+                    'timestamp': datetime.datetime.now(datetime.timezone.utc),
+                }
 
-                    logger.info("Completed analysis for issue %s (%s/%s/%s)",
-                                analysis_doc['issue_key'], analysis_doc['analysis_type'],
-                                analysis_doc['analysis_version'], analysis_doc['model_used'])
-                    total_analyses += 1
+                # Store in MongoDB
+                await self._store_issue_analysis_in_mongodb(analysis_doc)
 
-                except Exception as e:
-                    logger.error("Error analyzing issue %s (%s): %s", issue_key,
-                                 question_data['analysis_type'], e)
-                    errors += 1
+                logger.info("Completed analysis for issue %s (%s/%s/%s)", analysis_doc['issue_key'],
+                            analysis_doc['analysis_type'], analysis_doc['analysis_version'],
+                            analysis_doc['model_used'])
+                total_analyses += 1
+
+            except Exception as e:
+                logger.error("Error analyzing issue %s (%s): %s", issue_key,
+                             question_data['analysis_type'], e)
+                errors += 1
 
             processed_issues += 1
 
@@ -600,9 +608,12 @@ async def main():
         await analyzer.setup_database_indexes()
 
         # Process the epic analysis
-        logger.info("Starting code analysis for epic %s...", args.epic)
-        await analyzer.process_epic(args.epic)
-        logger.info("Code analysis completed successfully")
+        analysis_questions_config = analyzer.config['analysis_questions']
+
+        for question_key in analysis_questions_config.keys():
+            logger.info("Starting code analysis for epic %s ...", args.epic)
+            await analyzer.process_epic(args.epic, question_key)
+            logger.info("Code analysis completed successfully")
 
     finally:
         await analyzer.close_mongodb_connection()

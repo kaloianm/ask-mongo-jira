@@ -1,28 +1,62 @@
 [openai]
 system_prompt = """
-You are a Senior Software Engineer at MongoDB.
-You need to convince the company that it needs to invest some significant resources in improving
-the core server code quality in order to increase the development velocity for implementing
-horizontally scalable features. This includes revamping the APIs that the core server teams have at
-their disposal for performing catalog changes, such as creating/dropping databases, collections and
-indexes; modifying catalog properties, such as collection types, collection visibility and in
-general, catching-up on technical debt that has accumulated over the years.
+You are a Senior Staff Software Engineer at MongoDB.
+You are using your expertise in MongoDB's core server architecture and codebase to answer questions about Jira issues and their code changes.
+You will be given prompts with these pieces of information:
+ - Question prompt and context
+ - Set of allowed answer choices
+ - Jira ticket's summary, description and Git diff output extended with up to 50 lines of surrounding code for context
+
+Your task is to analyze the provided information, select the most appropriate answer choice and provide justification for your selection according to the question prompt.
+
+In your answers, you will strictly follow the requested structured output format.
 """
 
 [analysis_questions]
-# Questions to ask for each commit analysis
 
 [analysis_questions.categorize]
-version = 1
-template = """
-Given the following JIRA issue and its context, classify whether the code changes it performed are
-one of:
- - Catalog CRUD: Consumes the catalog as a reader only, but doesn't actually perform catalog changes
- - Catalog DDL: Consumes the catalog as a reader and writer, performs catalog changes
- - Catalog Implementation Change: Changes the code or the API of the catalog implementation
- - Something Else: Doesn't meet any of the criteria above
-Provide 2-3 sentences justification.
+version = 2
+prompt = """
+**Question Context:**
+Categorize the main purpose of the Jira issue based on the following criteria:
 
+It is "Catalog CRUD" if one or more of the following apply:
+ - Reads directly from the durable shard local catalog (e.g. `_mdb_catalog` or the `config.cache.databases/collections/chunks` and etc collections)
+ - Reads from the shard local catalog caches (e.g. `CollectionCatalog`, `AutoGet*`, `acquireCollection*`, `DatabaseShardingState`, `CollectionShardingState`, `ShardingState`)
+ - Performs database/collection locking in intent mode (IS or IX)
+ - Reads from the durable global catalog (e.g. the `config.databases/collections/chunks` and etc collections)
+ - Reads from the global catalog caches (e.g. `CatalogCache`)
+ - Performs shard version retries
+
+It is "Catalog DDL" if, in addition to the "Catalog CRUD" criteria above, one or more of the following apply:
+ - Modifies files in `src/mongo/s` (weak signal, but often true)
+ - Modifies files in `src/mongo/db/s/` (weak signal, but often true)
+ - Writes to the the durable shard local catalog (e.g. `_mdb_catalog` or the `config.cache.databases/collections/chunks` and etc collections)
+ - Writes to the shard local catalog caches (e.g., `CollectionCatalog`'s write methods, `DatabaseShardingRuntime`, `CollectionShardingRuntime`, `ShardingState/Runtime`'s write methods)
+ - Performs database/collection locking for write (X mode)
+ - Enters/leaves the critical section
+ - Writes to the durable global catalog (e.g. the `config.databases/collections/chunks` collections)
+ - Introduces or modifies DDL coordinator classes or DDL command implementations
+
+An issue is "Catalog Implementation Change" if one or more of the following apply:
+ - Modifies files in `src/mongo/s` (weak signal, but often true)
+ - Modifies files in `src/mongo/db/s/` (weak signal, but often true)
+ - Modifies catalog interfaces or their implementations (e.g., `CollectionCatalog`, `DatabaseShardingState/Runtime`, `CollectionShardingState/Runtime`, `ShardingState/Runtime`)
+ - Observes oplog entries for catalog changes via ShardServerOpObserver or ConfigServerOpObserver
+ - Modifies catalog cache interfaces (e.g. `CatalogCache`, `ConfigServerCatalogCacheLoader`, `ShardServerCatalogCacheLoader`)
+
+An issue is "Data Movement" if one or more of the following apply:
+ - Likely fulfills the criteria for "Catalog CRUD"
+ - Tails the oplog and inspects oplog entries (e.g. `repl::OpTypeEnum`)
+
+An issue is "Something Else" if none of the above criteria apply.
+
+**Output Format:**
+Classification: [Catalog CRUD | Catalog DDL | Catalog Implementation Change | Data Movement | Something Else]
+
+Reasoning: [2-3 sentences explaining why, citing specific files, functions, or patterns from the diff]
+"""
+template = """
 **JIRA issue**
 Issue: {issue_key}
 Summary: {issue_summary}
@@ -30,35 +64,4 @@ Description: {issue_description}
 
 **Commit diffs**
 {commit_diffs}
-
-**Classification Criteria:**
-
-An issue is "Catalog CRUD" if one or more of the following apply:
- - Reads from the local catalog containers (e.g. `CollectionCatalog`, `AutoGet*`, `CatalogCache`, `acquireCollection*`, etc.)
- - Reads from the global catalog containers (e.g., `DatabaseShardingState`, `CollectionShardingState`, `ShardingState`)
- - Reads catalog metadata (UUIDs, namespaces, collection properties)
- - Reads directly from the durable catalog (`_mdb_catalog` or the `config.cache.databases/collections/chunks` collections)
- - Performs collection/database locking for read (S or IS mode)
-
-An issue is "Catalog DDL" if one or more of the following apply:
- - Modifies files in `src/mongo/db/s/` (weak signal, but often true)
- - Writes to the the durable catalog (`_mdb_catalog` or the `config.cache.databases/collections/chunks` collections)
- - Modifies the local catalog containers (e.g. `CollectionCatalog`)
- - Modifies the global catalog containers (e.g., `DatabaseShardingState/Runtime`, `CollectionShardingState/Runtime`, `ShardingState/Runtime`)
- - Modifies catalog metadata (UUIDs, namespaces, collection properties)
- - Calls to `CollectionCatalog::write()`, `establishConsistentCollection()`
- - Performs collection/database locking for write (X mode)
-
-An issue is "Catalog Implementation Change" if one or more of the following apply:
- - Modifies files in `src/mongo/s` (weak signal, but often true)
- - Modifies files in `src/mongo/db/s/` (weak signal, but often true)
- - Modifies catalog interfaces (CollectionCatalog, MDBCatalog, or durable_catalog)
- - Modifies DDL coordinator classes or DDL command implementations
- - Observes oplog entries for catalog changes via ShardServerOpObserver or ConfigServerOpObserver
- - Modifies catalog cache interfaces (CatalogCache, ShardServerCatalogCacheLoader)
-
-**Output Format:**  
-Classification: [Catalog CRUD | Catalog DDL | Catalog Implementation Change | Something Else]
-
-Reasoning: [2-3 sentences explaining why, citing specific files, functions, or patterns from the diff]
 """
