@@ -4,7 +4,7 @@ fetch_code_changes - Tool for fetching code changes from local Git repositories 
                      commits stored in MongoDB by fetch_jira_epic.py.
 
 Usage:
-    python fetch_code_changes.py --help
+    python3 fetch_code_changes.py --help
 
 Environment Variables:
     MONGODB_URL - MongoDB connection URL (required)

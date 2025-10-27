@@ -4,7 +4,7 @@ fetch_jira_epic - Tool for fetching all issues in a Jira epic and their developm
                   and storing them in MongoDB.
 
 Usage:
-    python fetch_jira_epic.py --help
+    python3 fetch_jira_epic.py --help
 
 Environment Variables:
     MONGODB_URL - MongoDB connection URL (required)

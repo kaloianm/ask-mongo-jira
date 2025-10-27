@@ -4,7 +4,7 @@ analyze_code_changes - Tool for analyzing code changes using OpenAI API based on
                        changes stored in MongoDB by fetch_jira_epic.py and fetch_code_changes.py.
 
 Usage:
-    python analyze_code_changes.py --help
+    python3 analyze_code_changes.py --help
 
 Environment Variables:
     MONGODB_URL - MongoDB connection URL (required)

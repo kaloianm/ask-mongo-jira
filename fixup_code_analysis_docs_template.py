@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""
+fixup_code_analysis_docs_template - Tool to scan the documents in the code_analysis collection of
+                                    the ask-mongo-jira MongoDB database and fix up the
+                                    'classification' and 'reasoning' fields based on the
+                                    'raw_response' field.
+"""
 import argparse
 import logging
 import os
@@ -55,7 +62,7 @@ def main():
 
         # Iterate over each document
         for doc in documents:
-            print(f"\nProcessing document with _id: {doc['_id']}")
+            logging.info("Processing document with _id: %s", doc['_id'])
 
             raw_response_lines = doc['raw_response']
             if not isinstance(raw_response_lines, list):
@@ -99,10 +106,10 @@ def main():
             result = collection.replace_one({'_id': doc['_id']}, doc)
 
             if result.modified_count > 0:
-                print(f"Document with _id {doc['_id']} updated successfully.")
+                logging.info("Document with _id %s updated successfully.", doc['_id'])
                 modified_count += 1
             else:
-                print(f"No changes made to document with _id {doc['_id']}.")
+                logging.info("No changes made to document with _id %s.", doc['_id'])
 
         logging.info("\nCompleted. Total documents modified: %d", modified_count)
 
