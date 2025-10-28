@@ -457,13 +457,15 @@ class CodeAnalyzer:
         Args:
             epic_key: The epic ticket ID to analyze
         """
-        total_analyses = 0
-        processed_issues = 0
+        processed_issues = 0  # == skipped_issues + analyzed_issues + errors
+        skipped_issues = 0
+        analyzed_issues = 0
         errors = 0
 
         async for issue_data in self._get_epic_data_by_issue(epic_key):
             issue_epic = issue_data['epic_key']
             issue_key = issue_data['issue_key']
+            processed_issues += 1
 
             # Generate analysis questions for the entire issue
             question_data = self._generate_issue_analysis_question(issue_data, self.openai_model,
@@ -484,9 +486,10 @@ class CodeAnalyzer:
                 })
 
                 if existing:
-                    logger.info("Skipping analysis for %s/%s (%s/%s/%s)", issue_epic, issue_key,
-                                question_data['analysis_type'], question_data['analysis_version'],
-                                question_data['model_used'])
+                    logger.debug("Skipping analysis for %s/%s (%s/%s/%s)", issue_epic, issue_key,
+                                 question_data['analysis_type'], question_data['analysis_version'],
+                                 question_data['model_used'])
+                    skipped_issues += 1
                     continue
 
                 logger.info("Analyzing %s/%s (%s/%s/%s)", issue_epic, issue_key,
@@ -518,17 +521,16 @@ class CodeAnalyzer:
                 logger.info("Completed analysis for issue %s (%s/%s/%s)", analysis_doc['issue_key'],
                             analysis_doc['analysis_type'], analysis_doc['analysis_version'],
                             analysis_doc['model_used'])
-                total_analyses += 1
+                analyzed_issues += 1
 
             except Exception as e:
-                logger.error("Error analyzing issue %s (%s): %s", issue_key,
-                             question_data['analysis_type'], e)
+                logger.error("Error analyzing issue %s/%s (%s/%s): %s", epic_key, issue_key,
+                             question_data['analysis_type'], question_data['analysis_version'], e)
                 errors += 1
 
-            processed_issues += 1
-
-        logger.info("Epic analysis complete: %d issues processed, %d total analyses, %d errors",
-                    processed_issues, total_analyses, errors)
+        logger.info("Analysis complete: %d processed, %d skipped, %d analyzed, %d errors",
+                    processed_issues, skipped_issues, analyzed_issues, errors)
+        assert processed_issues == (skipped_issues + analyzed_issues + errors)
 
     async def setup_database_indexes(self) -> None:
         """Set up database indexes for efficient querying on the code_analysis collection"""
