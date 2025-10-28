@@ -240,7 +240,10 @@ class CodeAnalyzer:
         pipeline = load_aggregation_pipeline("analyze_code_changes_aggregation.json")
 
         # Replace the placeholder with the actual epic key
-        pipeline[0]["$match"]["epic"] = epic_key
+        if epic_key:
+            pipeline[0]["$match"]["epic"] = epic_key
+        else:
+            pipeline[0]["$match"].pop("epic")
 
         async for issue_data in self.jira_issues_collection.aggregate(pipeline):
             commits = issue_data['commits']
@@ -447,7 +450,7 @@ class CodeAnalyzer:
         logger.debug("Analysis %s in code_analysis collection for issue %s", action,
                      analysis_data["issue_key"])
 
-    async def process_epic(self, epic_key: str, question_key: str) -> None:
+    async def process_epic(self, epic_key: str, question_key: str):
         """
         Main processing function: analyze all code changes in an epic by JIRA issue
         
@@ -481,13 +484,14 @@ class CodeAnalyzer:
                 })
 
                 if existing:
-                    logger.info("Skipping analysis for %s (%s/%s/%s)", issue_key,
+                    logger.info("Skipping analysis for %s/%s (%s/%s/%s)", issue_epic, issue_key,
                                 question_data['analysis_type'], question_data['analysis_version'],
                                 question_data['model_used'])
                     continue
 
-                logger.info("Analyzing %s (%s/%s/%s)", issue_key, question_data['analysis_type'],
-                            question_data['analysis_version'], question_data['model_used'])
+                logger.info("Analyzing %s/%s (%s/%s/%s)", issue_epic, issue_key,
+                            question_data['analysis_type'], question_data['analysis_version'],
+                            question_data['model_used'])
 
                 # Get OpenAI analysis
                 response = await self._analyze_with_openai(question_data['question'])
@@ -547,11 +551,12 @@ async def main():
     """
     parser = argparse.ArgumentParser(
         description="Analyze code changes using OpenAI API for commits in a JIRA epic")
-    parser.add_argument("epic", help="Epic ticket ID to analyze (e.g., SPM-1234)")
     parser.add_argument("--log-level",
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         default='INFO',
                         help="Set the logging level")
+
+    parser.add_argument("--epic", help="Epic ticket ID to analyze (e.g., SPM-1234)")
 
     # OpenAI configuration parameters
     parser.add_argument("--openai-base-url",
@@ -611,7 +616,8 @@ async def main():
         analysis_questions_config = analyzer.config['analysis_questions']
 
         for question_key in analysis_questions_config.keys():
-            logger.info("Starting code analysis for epic %s ...", args.epic)
+            logger.info("Starting code analysis for %s ...",
+                        args.epic if args.epic else "all epics")
             await analyzer.process_epic(args.epic, question_key)
             logger.info("Code analysis completed successfully")
 
