@@ -1,7 +1,16 @@
 [
     {
         "$match": {
-            "epic": "EPIC_KEY_PLACEHOLDER"
+            "epic": "EPIC_KEY_PLACEHOLDER",
+            "development.commits": {
+                "$exists": true,
+                "$ne": []
+            },
+            "development.commits.message": {
+                "$not": {
+                    "$regex": "^Revert"
+                }
+            }
         }
     },
     {
@@ -41,7 +50,8 @@
                     "detail": {
                         "message": "$commit_details.message",
                         "author": "$commit_details.author",
-                        "repository": "$commit_details.repository"
+                        "repository": "$commit_details.repository",
+                        "stats": "$commit_details.stats"
                     }
                 }
             }

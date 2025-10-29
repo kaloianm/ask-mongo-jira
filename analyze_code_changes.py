@@ -284,18 +284,30 @@ class CodeAnalyzer:
 
             commit_author = commit_detail['author']
             commit_message = commit_detail['message']
+            commit_stats = commit_detail['stats']
 
-            file_changes = commit['file_changes']
+            commit_all_file_changes = []
 
-            all_file_changes = []
-            for file_change in file_changes:
-                filename = file_change['filename']
-                status = file_change['status']
-                patch = file_change['patch']
+            if commit_stats['total'] < 10000:
+                for file_change in commit['file_changes']:
+                    filename = file_change['filename']
+                    status = file_change['status']
 
-                all_file_changes.append(f"File: {filename}\nStatus: {status}\nPatch:\n{patch}\n")
+                    if file_change['changes'] > 5000:
+                        patch = f"[Patch too large to display ({file_change['changes']} changes)]"
+                    elif file_change['changes'] > 2500:
+                        patch = file_change['short_patch']
+                    else:
+                        patch = file_change['patch']
 
-            changes_text = '\n'.join(all_file_changes)
+                    commit_all_file_changes.append(
+                        f"File: {filename}\nStatus: {status}\nPatch:\n{patch}\n")
+            else:
+                commit_all_file_changes.append(
+                    f"[Skipped file changes for commit {commit_id} due to large size ({commit_stats['total']} changes)]"
+                )
+
+            changes_text = '\n'.join(commit_all_file_changes)
             separator = '-' * 40
             single_commit = f"""
                 Commit ID: {commit_id}\n
