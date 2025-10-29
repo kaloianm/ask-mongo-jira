@@ -234,7 +234,8 @@ class CodeAnalyzer:
         Returns:
             List of documents with issue data and all related commits with file changes
         """
-        logger.info("Fetching aggregated data by issue for epic %s", epic_key)
+        logger.info("Fetching aggregated data by issue for %s",
+                    epic_key if epic_key else "all epics")
 
         # Load MongoDB aggregation pipeline from JSON file
         pipeline = load_aggregation_pipeline("analyze_code_changes_aggregation.json")
@@ -524,7 +525,7 @@ class CodeAnalyzer:
                 analyzed_issues += 1
 
             except Exception as e:
-                logger.error("Error analyzing issue %s/%s (%s/%s): %s", epic_key, issue_key,
+                logger.error("Error analyzing issue %s/%s (%s/%s): %s", issue_epic, issue_key,
                              question_data['analysis_type'], question_data['analysis_version'], e)
                 errors += 1
 
