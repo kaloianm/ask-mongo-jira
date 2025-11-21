@@ -276,7 +276,7 @@ class JiraIssueFetcher:
         Get all issues from Core Server project that belong to a specific epic - returns an iterator
         """
         # JQL to find all issues in Core Server project that belong to the epic
-        jql = f'project = "Core Server" AND "Epic Link" = {epic_key}'
+        jql = f'project = "Core Server" AND "Epic Link" = {epic_key} AND status = Closed'
         logger.info("Searching for issues in epic %s using JQL: %s", epic_key, jql)
 
         # Search for issues with expanded fields
