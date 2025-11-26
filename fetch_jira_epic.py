@@ -72,6 +72,7 @@ class JiraIssueFetcher:
         self.mongodb_client = AsyncIOMotorClient(self.mongodb_url)
 
         self.db = self.mongodb_client["ask-mongo-jira"]
+        self.jira_epics_collection = self.db["jira_epics"]
         self.jira_issues_collection = self.db["jira_issues"]
 
     def _is_allowed_repository(self, url: str) -> bool:
@@ -271,6 +272,58 @@ class JiraIssueFetcher:
 
         return dev_info if any(dev_info.values()) else None
 
+    async def fetch_epic_details(self, epic_key: str) -> Dict[str, Any]:
+        """
+        Fetch the epic ticket details and return epic information including start/end dates
+        """
+        # Fetch the epic issue
+        epic_issue = self.jira_client.issue(epic_key)
+
+        # Extract basic epic information
+        epic_data = {
+            'epic':
+            epic_key,
+            'url':
+            f"{self.jira_url}/browse/{epic_key}",
+            'summary':
+            epic_issue.fields.summary,
+            'start_date':
+            datetime.datetime.fromisoformat(
+                epic_issue.fields.customfield_14261.replace('Z', '+00:00')),
+            'end_date':
+            datetime.datetime.fromisoformat(
+                epic_issue.fields.customfield_14262.replace('Z', '+00:00')),
+        }
+
+        # Add metadata
+        epic_data['last_updated'] = datetime.datetime.now(datetime.timezone.utc)
+
+        logger.info("Successfully fetched epic %s: %s", epic_key, epic_data['summary'])
+        if epic_data.get('start_date'):
+            logger.info("Epic start date: %s", epic_data['start_date'])
+        if epic_data.get('end_date'):
+            logger.info("Epic end date: %s", epic_data['end_date'])
+
+        return epic_data
+
+    async def store_epic_in_mongodb(self, epic_data: Dict[str, Any]) -> None:
+        """
+        Store epic information in MongoDB jira_epics collection
+        """
+        logger.info("Storing epic %s in MongoDB", epic_data['epic'])
+
+        # Upsert the epic data
+        filter_query = {"epic": epic_data["epic"]}
+
+        result = await self.jira_epics_collection.replace_one(filter_query, epic_data, upsert=True)
+
+        if result.upserted_id:
+            logger.info("Epic %s inserted into MongoDB", epic_data['epic'])
+        elif result.modified_count > 0:
+            logger.info("Epic %s updated in MongoDB", epic_data['epic'])
+        else:
+            logger.info("Epic %s already up to date in MongoDB", epic_data['epic'])
+
     async def get_epic_issues(self, epic_key: str):
         """
         Get all issues from Core Server project that belong to a specific epic - returns an iterator
@@ -380,6 +433,11 @@ class JiraIssueFetcher:
                                                        unique=True,
                                                        name="issue_unique")
 
+        # Create a unique index on epic for jira_epics collection
+        await self.jira_epics_collection.create_index([("epic", 1)],
+                                                      unique=True,
+                                                      name="epic_unique")
+
         logger.info("Database indexes created successfully")
 
     async def close_mongodb_connection(self) -> None:
@@ -423,7 +481,12 @@ async def main():
         # Set up database indexes
         await tool.setup_database_indexes()
 
-        # Collect data
+        # First, fetch and store the epic details
+        logger.info("Fetching epic details for: %s", args.epic)
+        epic_data = await tool.fetch_epic_details(args.epic)
+        await tool.store_epic_in_mongodb(epic_data)
+
+        # Then collect issues data
         logger.info("Fetching issues for epic: %s", args.epic)
 
         # Collect all issues from the iterator
@@ -434,7 +497,7 @@ async def main():
         # Store in MongoDB instead of printing
         await tool.store_issues_in_mongodb(issues)
 
-        logger.info("Successfully processed %d issues for epic %s", len(issues), args.epic)
+        logger.info("Successfully processed epic %s with %d issues", args.epic, len(issues))
 
     finally:
         await tool.close_mongodb_connection()
