@@ -388,7 +388,9 @@ class JiraIssueFetcher:
             }
 
             # Extract development information if available
-            issue_data['development'] = self._extract_development_info(issue)
+            development_info = self._extract_development_info(issue)
+            if development_info:
+                issue_data['development'] = development_info
 
             yield issue_data
 

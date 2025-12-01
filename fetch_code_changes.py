@@ -397,8 +397,7 @@ class GitCodeFetcher:
             scan_version: Version number for this scan
             epic_key: Optional epic key to filter issues (e.g., "SPM-1234")
         """
-        # Build query to find JIRA issues that have development info with commits
-        query = {"development.commits": {"$exists": True, "$ne": []}}
+        query = {}
 
         # Add epic filter if specified
         if epic_key:
@@ -407,17 +406,35 @@ class GitCodeFetcher:
 
         cursor = self.jira_issues_collection.find(query)
 
+        processed_issues = 0
         processed_commits = 0
+        skipped_issues = 0
         skipped_commits = 0
         errors = 0
-        issue_count = 0
 
         async for issue in cursor:
-            issue_count += 1
+            processed_issues += 1
             epic_key = issue['epic']
             issue_key = issue['issue']
-            dev_info = issue['development']
-            commits = dev_info['commits']
+
+            fetch_version = issue.get('fetch_version')
+            if fetch_version and fetch_version == scan_version:
+                logger.debug("Issue %s/%s already fetched for version %s, skipping", epic_key,
+                             issue_key, scan_version)
+                skipped_issues += 1
+                continue
+
+            development_info = issue.get('development')
+            if not development_info:
+                logger.info("No development info for issue %s/%s, skipping", epic_key, issue_key)
+                skipped_issues += 1
+                continue
+
+            commits = development_info['commits']
+            if len(commits) == 0:
+                logger.info("No commits found for issue %s/%s, skipping", epic_key, issue_key)
+                skipped_issues += 1
+                continue
 
             logger.info("Processing issue %s/%s with %d commits", epic_key, issue_key, len(commits))
 
@@ -455,8 +472,8 @@ class GitCodeFetcher:
             await self._mark_jira_issue_fetched_in_mongodb(epic_key, issue_key, scan_version)
 
         logger.info(
-            "Processing complete: %d issues processed, %d commits processed, %d skipped, %d errors",
-            issue_count, processed_commits, skipped_commits, errors)
+            "Processing complete: %d issues processed, %d issues skipped, %d commits processed, %d commits skipped, %d errors",
+            processed_issues, skipped_issues, processed_commits, skipped_commits, errors)
 
     async def setup_database_indexes(self) -> None:
         """
