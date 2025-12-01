@@ -295,9 +295,6 @@ class JiraIssueFetcher:
                 epic_issue.fields.customfield_14262.replace('Z', '+00:00')),
         }
 
-        # Add metadata
-        epic_data['last_updated'] = datetime.datetime.now(datetime.timezone.utc)
-
         logger.info("Successfully fetched epic %s: %s", epic_key, epic_data['summary'])
         if epic_data.get('start_date'):
             logger.info("Epic start date: %s", epic_data['start_date'])
@@ -305,6 +302,24 @@ class JiraIssueFetcher:
             logger.info("Epic end date: %s", epic_data['end_date'])
 
         return epic_data
+
+    async def is_epic_already_fetched(self, epic_key: str) -> bool:
+        """
+        Check if an epic has already been fetched (has a last_updated field indicating completion)
+        """
+        existing_epic = await self.jira_epics_collection.find_one({
+            "epic": epic_key,
+            "last_updated": {
+                "$exists": True
+            }
+        })
+
+        if existing_epic:
+            fetch_time = existing_epic.get('last_updated')
+            logger.info("Epic %s was already fetched at %s, skipping", epic_key, fetch_time)
+            return True
+
+        return False
 
     async def store_epic_in_mongodb(self, epic_data: Dict[str, Any]) -> None:
         """
@@ -459,6 +474,9 @@ async def main():
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         default='INFO',
                         help="Set the logging level")
+    parser.add_argument("--force-refetch",
+                        action="store_true",
+                        help="Force re-fetching the epic even if it has already been fetched")
 
     args = parser.parse_args()
 
@@ -481,6 +499,13 @@ async def main():
         # Set up database indexes
         await tool.setup_database_indexes()
 
+        # Check if epic has already been fetched (unless force-refetch is specified)
+        if not args.force_refetch and await tool.is_epic_already_fetched(args.epic):
+            logger.info(
+                "Epic %s has already been fetched, skipping (use --force-refetch to override)",
+                args.epic)
+            return
+
         # First, fetch and store the epic details
         logger.info("Fetching epic details for: %s", args.epic)
         epic_data = await tool.fetch_epic_details(args.epic)
@@ -496,6 +521,10 @@ async def main():
 
         # Store in MongoDB instead of printing
         await tool.store_issues_in_mongodb(issues)
+
+        # Mark epic as fetched by tagging it with a last_updated timestamp
+        epic_data['last_updated'] = datetime.datetime.now(datetime.timezone.utc)
+        await tool.store_epic_in_mongodb(epic_data)
 
         logger.info("Successfully processed epic %s with %d issues", args.epic, len(issues))
 
