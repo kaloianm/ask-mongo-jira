@@ -571,7 +571,8 @@ async def main():
                         default='INFO',
                         help="Set the logging level")
 
-    parser.add_argument("--epic", help="Epic ticket ID to analyze (e.g., SPM-1234)")
+    parser.add_argument("--epic",
+                        help="Epic ticket ID to restrict the analysis to (e.g., SPM-1234)")
 
     # OpenAI configuration parameters
     parser.add_argument("--openai-base-url",

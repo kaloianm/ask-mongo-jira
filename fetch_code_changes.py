@@ -5,6 +5,7 @@ fetch_code_changes - Tool for fetching code changes from local Git repositories 
 
 Usage:
     python3 fetch_code_changes.py --help
+    python3 fetch_code_changes.py --epic SPM-1234
 
 Environment Variables:
     MONGODB_URL - MongoDB connection URL (required)
@@ -12,8 +13,9 @@ Environment Variables:
 
 The script will:
 1. Query the "ask-mongo-jira" database's "jira_issues" collection for git commits
-2. For each unique commit, fetch the code changes from local Git repositories using GitPython
-3. Store the results in two collections: "commits" and "file_changes"
+2. Optionally filter by a specific epic using the --epic argument
+3. For each unique commit, fetch the code changes from local Git repositories using GitPython
+4. Store the results in two collections: "commits" and "file_changes"
 """
 
 import os
@@ -390,17 +392,24 @@ class GitCodeFetcher:
             logger.warning("Could not find issue %s in epic %s to mark as fetched", issue_key,
                            epic_key)
 
-    async def process_jira_issues(self, scan_version: int) -> None:
+    async def process_jira_issues(self, scan_version: int, epic_key: str = None) -> None:
         """
         Main processing function: iterate through JIRA issues and fetch commit details from local
         Git repositories.
+        
+        Args:
+            scan_version: Version number for this scan
+            epic_key: Optional epic key to filter issues (e.g., "SPM-1234")
         """
-        # Query all JIRA issues that have development info with commits
-        cursor = self.jira_issues_collection.find(
-            {"development.commits": {
-                "$exists": True,
-                "$ne": []
-            }})
+        # Build query to find JIRA issues that have development info with commits
+        query = {"development.commits": {"$exists": True, "$ne": []}}
+
+        # Add epic filter if specified
+        if epic_key:
+            query["epic"] = epic_key
+            logger.info("Filtering issues by epic: %s", epic_key)
+
+        cursor = self.jira_issues_collection.find(query)
 
         processed_commits = 0
         skipped_commits = 0
@@ -517,6 +526,10 @@ async def main():
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                         default='INFO',
                         help="Set the logging level")
+    parser.add_argument(
+        "--epic",
+        help="Epic ticket ID to filter issues (e.g., SPM-1234). If not provided, processes all epics"
+    )
 
     args = parser.parse_args()
 
@@ -545,7 +558,7 @@ async def main():
 
         # Process JIRA issues and their commits
         logger.info("Starting to fetch code changes from local Git repositories...")
-        await fetcher.process_jira_issues(scan_version=1)
+        await fetcher.process_jira_issues(scan_version=1, epic_key=args.epic)
         logger.info("Code change fetching completed successfully")
 
     finally:
