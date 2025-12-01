@@ -318,7 +318,6 @@ class GitCodeFetcher:
         """
         commit_data['jira_issues'] = jira_issues
         commit_data['version'] = scan_version
-        commit_data['last_updated'] = datetime.datetime.now(datetime.timezone.utc)
 
         # Use commit_id as the unique identifier
         filter_query = {"commit_id": commit_data["commit_id"]}
@@ -342,8 +341,6 @@ class GitCodeFetcher:
         if not files_changed:
             return
 
-        current_time = datetime.datetime.now(datetime.timezone.utc)
-
         # First, remove any existing file changes for this commit
         await self.file_changes_collection.delete_many({"commit_id": commit_id})
 
@@ -354,7 +351,6 @@ class GitCodeFetcher:
                 'commit_id': commit_id,
                 'repository': repository,
                 'version': scan_version,
-                'last_updated': current_time,
                 **file_change  # Include all file change fields
             }
             file_change_docs.append(doc)
@@ -427,38 +423,18 @@ class GitCodeFetcher:
 
             for commit in commits:
                 commit_id = commit['id']
-                if not commit_id:
-                    logger.warning("Skipping commit with no ID in issue %s", issue_key)
+
+                # Check if we already have this commit in our 'commits' collection
+                existing = await self.commits_collection.find_one({"commit_id": commit_id})
+                if existing and 'version' in existing:
+                    # Skip processing if the existing commit entry is already at the current scan
+                    # version
+                    skipped_commits += 1
                     continue
 
                 owner, repo = self._extract_owner_repo(commit['url'])
                 logger.debug("Processing commit %s from %s/%s (issue: %s)", commit_id[:8], owner,
                              repo, issue_key)
-
-                # Check if we already have this commit in our collection
-                existing = await self.commits_collection.find_one({"commit_id": commit_id})
-                if existing:
-                    # Update the existing commit to include this JIRA issue if not already present
-                    if issue_key not in existing['jira_issues']:
-                        await self.commits_collection.update_one({"commit_id": commit_id}, {
-                            "$addToSet": {
-                                "jira_issues": issue_key
-                            },
-                            "$set": {
-                                "last_updated": datetime.datetime.now(datetime.timezone.utc)
-                            }
-                        })
-                        logger.debug("Added issue %s to existing commit %s", issue_key,
-                                     commit_id[:8])
-                    else:
-                        logger.debug("Commit %s already includes issue %s", commit_id[:8],
-                                     issue_key)
-
-                    # Skip processing if the existing commit entry is already at the current scan
-                    # version
-                    if ('version' in existing) and existing['version'] == scan_version:
-                        skipped_commits += 1
-                        continue
 
                 # Fetch detailed commit information from local Git repository
                 commit_result = await self._fetch_commit_details(owner, repo, commit_id)
@@ -475,8 +451,8 @@ class GitCodeFetcher:
                 else:
                     errors += 1
 
-                # Mark the JIRA issue as fetched in the jira_issues collection
-                await self._mark_jira_issue_fetched_in_mongodb(epic_key, issue_key, scan_version)
+            # Mark the JIRA issue as fetched in the jira_issues collection
+            await self._mark_jira_issue_fetched_in_mongodb(epic_key, issue_key, scan_version)
 
         logger.info(
             "Processing complete: %d issues processed, %d commits processed, %d skipped, %d errors",

@@ -314,12 +314,7 @@ class JiraIssueFetcher:
             }
         })
 
-        if existing_epic:
-            fetch_time = existing_epic.get('last_updated')
-            logger.info("Epic %s was already fetched at %s, skipping", epic_key, fetch_time)
-            return True
-
-        return False
+        return bool(existing_epic)
 
     async def store_epic_in_mongodb(self, epic_data: Dict[str, Any]) -> None:
         """
@@ -434,7 +429,7 @@ class JiraIssueFetcher:
         logger.info("Batch operation completed: %d inserted, %d updated, %d total processed",
                     inserted_count, updated_count, len(issues))
 
-    async def setup_database_indexes(self) -> None:
+    async def setup_database_indexes(self):
         """
         Set up database indexes for efficient querying
         """
