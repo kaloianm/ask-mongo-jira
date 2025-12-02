@@ -55,6 +55,9 @@ def setup_logging(level: str = "INFO") -> None:
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S')
 
+    # Silence httpx logs to avoid noise
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 def load_config(config_path: str = "config.toml") -> Dict[str, Any]:
     """Load configuration from TOML file"""
