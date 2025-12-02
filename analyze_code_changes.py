@@ -257,7 +257,7 @@ class CodeAnalyzer:
             yield issue_data
 
     def _generate_issue_analysis_question(self, issue_data: Dict[str, Any],
-                                          analysis_type: str) -> List[Dict[str, str]]:
+                                          question_config) -> List[Dict[str, str]]:
         """
         Generate analysis questions for an entire JIRA issue (all commits and file changes)
 
@@ -334,13 +334,7 @@ class CodeAnalyzer:
             '\n'.join(commit_diffs) if len(commit_diffs) > 0 else 'No commit details available',
         }
 
-        analysis_questions_config = self.config['analysis_questions']
-        question_config = analysis_questions_config[analysis_type]
         return {
-            'analysis_type':
-            analysis_type,
-            'analysis_version':
-            question_config['version'],
             'question':
             question_config['prompt'] + '\n' + question_config['template'].format(**template_vars),
             'commit_ids':
@@ -471,6 +465,8 @@ class CodeAnalyzer:
         Args:
             epic_key: The epic ticket ID to analyze
         """
+        analysis_questions_config = self.config['analysis_questions']
+
         processed_issues = 0  # == skipped_issues + analyzed_issues + errors
         skipped_issues = 0
         analyzed_issues = 0
@@ -482,7 +478,9 @@ class CodeAnalyzer:
             processed_issues += 1
 
             # Generate analysis questions for the entire issue
-            question_data = self._generate_issue_analysis_question(issue_data, analysis_type)
+            question_config = analysis_questions_config[analysis_type]
+            analysis_version = question_config['version']
+
             try:
                 # Check if we already have this analysis
                 existing = await self.code_analysis_collection.find_one({
@@ -493,22 +491,22 @@ class CodeAnalyzer:
                     "analysis_type":
                     analysis_type,
                     "analysis_version":
-                    question_data['analysis_version'],
+                    analysis_version,
                     "model_used":
                     self.openai_model,
                 })
 
                 if existing:
                     logger.debug("Skipping analysis for %s/%s (%s/%s/%s)", issue_epic, issue_key,
-                                 analysis_type, question_data['analysis_version'],
-                                 self.openai_model)
+                                 analysis_type, analysis_version, self.openai_model)
                     skipped_issues += 1
                     continue
 
                 logger.info("Analyzing %s/%s (%s/%s/%s)", issue_epic, issue_key, analysis_type,
-                            question_data['analysis_version'], self.openai_model)
+                            analysis_version, self.openai_model)
 
                 # Get OpenAI analysis
+                question_data = self._generate_issue_analysis_question(issue_data, question_config)
                 response = await self._analyze_with_openai(question_data['question'])
 
                 # Prepare analysis document
@@ -516,7 +514,7 @@ class CodeAnalyzer:
                     'epic_key': issue_epic,
                     'issue_key': issue_key,
                     'analysis_type': analysis_type,
-                    'analysis_version': question_data['analysis_version'],
+                    'analysis_version': analysis_version,
                     'model_used': self.openai_model,
                     'commit_ids': question_data['commit_ids'],
                     'classification': response['classification'],
@@ -531,12 +529,12 @@ class CodeAnalyzer:
                 await self._store_issue_analysis_in_mongodb(analysis_doc)
 
                 logger.info("Completed analysis for issue %s (%s/%s/%s)", analysis_doc['issue_key'],
-                            analysis_type, analysis_doc['analysis_version'], self.openai_model)
+                            analysis_type, analysis_version, self.openai_model)
                 analyzed_issues += 1
 
             except Exception as e:
                 logger.error("Error analyzing issue %s/%s (%s/%s/%s): %s", issue_epic, issue_key,
-                             analysis_type, question_data['analysis_version'], self.openai_model, e)
+                             analysis_type, analysis_version, self.openai_model, e)
                 errors += 1
 
         logger.info("Analysis complete: %d processed, %d skipped, %d analyzed, %d errors",
