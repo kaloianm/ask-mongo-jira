@@ -281,7 +281,7 @@ class CodeAnalyzer:
             commit_id = commit['id']
             commit_detail = commit['detail']
             if not commit_detail:
-                logging.debug("Skipping commit %s from (%s, %s) with missing details", commit_id,
+                logging.debug("Skipping commit %s from (%s/%s) with missing details", commit_id,
                               issue_epic, issue_key)
                 continue
 
