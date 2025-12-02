@@ -253,7 +253,7 @@ class CodeAnalyzer:
 
             yield issue_data
 
-    def _generate_issue_analysis_question(self, issue_data: Dict[str, Any], model_to_use: str,
+    def _generate_issue_analysis_question(self, issue_data: Dict[str, Any],
                                           analysis_type: str) -> List[Dict[str, str]]:
         """
         Generate analysis questions for an entire JIRA issue (all commits and file changes)
@@ -338,8 +338,6 @@ class CodeAnalyzer:
             analysis_type,
             'analysis_version':
             question_config['version'],
-            'model_used':
-            model_to_use,
             'question':
             question_config['prompt'] + '\n' + question_config['template'].format(**template_vars),
             'commit_ids':
@@ -481,8 +479,7 @@ class CodeAnalyzer:
             processed_issues += 1
 
             # Generate analysis questions for the entire issue
-            question_data = self._generate_issue_analysis_question(issue_data, self.openai_model,
-                                                                   analysis_type)
+            question_data = self._generate_issue_analysis_question(issue_data, analysis_type)
             try:
                 # Check if we already have this analysis
                 existing = await self.code_analysis_collection.find_one({
@@ -495,18 +492,18 @@ class CodeAnalyzer:
                     "analysis_version":
                     question_data['analysis_version'],
                     "model_used":
-                    question_data['model_used'],
+                    self.openai_model,
                 })
 
                 if existing:
                     logger.debug("Skipping analysis for %s/%s (%s/%s/%s)", issue_epic, issue_key,
                                  analysis_type, question_data['analysis_version'],
-                                 question_data['model_used'])
+                                 self.openai_model)
                     skipped_issues += 1
                     continue
 
                 logger.info("Analyzing %s/%s (%s/%s/%s)", issue_epic, issue_key, analysis_type,
-                            question_data['analysis_version'], question_data['model_used'])
+                            question_data['analysis_version'], self.openai_model)
 
                 # Get OpenAI analysis
                 response = await self._analyze_with_openai(question_data['question'])
@@ -531,13 +528,12 @@ class CodeAnalyzer:
                 await self._store_issue_analysis_in_mongodb(analysis_doc)
 
                 logger.info("Completed analysis for issue %s (%s/%s/%s)", analysis_doc['issue_key'],
-                            analysis_type, analysis_doc['analysis_version'],
-                            analysis_doc['model_used'])
+                            analysis_type, analysis_doc['analysis_version'], self.openai_model)
                 analyzed_issues += 1
 
             except Exception as e:
-                logger.error("Error analyzing issue %s/%s (%s/%s): %s", issue_epic, issue_key,
-                             analysis_type, question_data['analysis_version'], e)
+                logger.error("Error analyzing issue %s/%s (%s/%s/%s): %s", issue_epic, issue_key,
+                             analysis_type, question_data['analysis_version'], self.openai_model, e)
                 errors += 1
 
         logger.info("Analysis complete: %d processed, %d skipped, %d analyzed, %d errors",
