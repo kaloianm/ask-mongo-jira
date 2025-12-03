@@ -462,10 +462,9 @@ class GraphDataGenerator:
         plt.tight_layout()
         plt.savefig('epic_duration_vs_catalog_percentage.png', dpi=300, bbox_inches='tight')
 
-        # Show interactive plot with tooltips (keep window open)
+        # Show interactive plot with tooltips (non-blocking)
         print("Interactive plot opened - hover over data points to see epic names!")
-        print("Close the plot window to continue...")
-        plt.show(block=True)
+        plt.show(block=False)
 
         # Print summary statistics
         print(f"\nGraph 1 Summary:")

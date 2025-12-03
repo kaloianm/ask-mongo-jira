@@ -211,10 +211,10 @@ def create_interactive_plot(data):
     print(f"Average duration: {np.mean(durations):.1f} weeks")
     print(f"Average catalog percentage: {np.mean(catalog_percentages):.1f}%")
     print(f"\nHover over the data points to see epic names and details!")
-    print("Close the window when done exploring.")
+    print("Interactive plot window opened (non-blocking).")
 
-    # Show the interactive plot
-    plt.show(block=True)
+    # Show the interactive plot (non-blocking)
+    plt.show(block=False)
 
 
 async def main():
