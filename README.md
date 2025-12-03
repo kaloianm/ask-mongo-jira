@@ -47,11 +47,11 @@ python analyze_code_changes.py EPIC-123 \
 3. **`analyze_code_changes.py`** - Uses OpenAI API to analyze code changes at the JIRA issue level with MongoDB aggregation for optimal performance
 
 ## Collections Structure
-- **`jira_epics`** - JIRA epic details
-- **`jira_issues`** - JIRA issue details with development information
-- **`commits`** - Git commit metadata (author, message, stats, etc.)
-- **`file_changes`** - Individual file changes per commit with diffs
-- **`code_analysis`** - OpenAI analysis results for complete JIRA issues (not individual files)
+- **`jira_epics`** - Contains important Jira Epic details for each of the analyzed projects, most notably its start_date, end_date and name (summary). Entirely copied from Jira, without any transformation.
+- **`jira_issues`** - Contains the Jira issue details along with development information, representing the commit ids that went into solving this issue. Entirely copied from Jira, without any transformation. Foreign keys are `epic` that links back into `jira_epics` and `development.commits.id` that links into `commits.commit_id`.
+- **`commits`** - For each issue commit from `jira_issues.development.commits` contains detailed commit information obtained from Git itself, such as the commit metadata (author, message, stats, etc.). Foreign keys are `jira_issues` that link back into `jira_issues.issue` and `commit_id` that links into `file_changes.commit_id`.
+- **`file_changes`** - For each individual file changed by a commit from `commits.commit_id` contains the actual diff (in long and short form). Foreign key is `commit_id` that links back into `commits.commit_id`.
+- **`code_analysis`** - For all `file_changes` belonging to the same `commit_id` contains OpenAI analysis results. Foreign keys are `commit_ids` that link back into `commits` and `epic_key`/`issue_key` that link back into `jira_epics`/`jira_issues`.
 
 ## Environment Variables
 See [.env.example](.env.example) for all configuration options.
