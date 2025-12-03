@@ -12,6 +12,8 @@ Environment Variables:
     MONGODB_URL - MongoDB connection URL (required)
 """
 
+from generate_graphs import GraphDataGenerator
+
 import asyncio
 import os
 import logging
@@ -22,10 +24,8 @@ from dotenv import load_dotenv
 
 # Import our existing generator
 import sys
-import os
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from generate_graphs import GraphDataGenerator
 
 # Load environment variables
 load_dotenv()
