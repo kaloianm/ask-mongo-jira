@@ -70,21 +70,22 @@ def create_interactive_plot(data):
     # Create tooltip annotations with smart positioning
     annotations = []
     for i, (dur, catalog, name) in enumerate(zip(durations, catalog_percentages, epic_names)):
-        annotation = ax.annotate(f"{name}\nDuration: {dur:.1f} weeks\nCatalog: {catalog:.1f}%",
-                                 xy=(dur, catalog),
-                                 xytext=(20, 20),
-                                 textcoords="offset points",
-                                 bbox=dict(boxstyle="round,pad=0.5",
-                                           fc="lightyellow",
-                                           alpha=0.9,
-                                           edgecolor="black"),
-                                 arrowprops=dict(arrowstyle="->",
-                                                 connectionstyle="arc3,rad=0.1",
-                                                 color="black"),
-                                 fontsize=10,
-                                 visible=False,
-                                 zorder=100,
-                                 ha='left')
+        # Calculate Data Movement percentage
+        item = data[i]
+        data_movement_pct = (item['data_movement'] / item['total_classifications'] *
+                             100) if item['total_classifications'] > 0 else 0
+
+        annotation = ax.annotate(
+            f"{name}\nDuration: {dur:.1f} weeks\nCatalog: {catalog:.1f}%\nData Movement: {data_movement_pct:.1f}%",
+            xy=(dur, catalog),
+            xytext=(20, 20),
+            textcoords="offset points",
+            bbox=dict(boxstyle="round,pad=0.5", fc="lightyellow", alpha=0.9, edgecolor="black"),
+            arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0.1", color="black"),
+            fontsize=10,
+            visible=False,
+            zorder=100,
+            ha='left')
         annotations.append(annotation)
 
     # Function to handle mouse motion with smart positioning
